@@ -406,6 +406,20 @@ void PauseMenu_ItemMenu_Update(void) {
         menuSlot = gMenu.field_0x3;
 
         entry = &gItemMenuTable[menuSlot];
+#ifdef PC_PORT
+        /* Press a soft-slot button (X/Y/L2/R2 on PC/3DS; triangle, square,
+         * right stick left/right or the rear touch zones on the Vita) on the
+         * cursor item to bind it to that slot. */
+        {
+            extern int Port_SoftSlots_TakePendingAssign(void);
+            extern void Port_SoftSlots_SetAssignment(int s, unsigned char id);
+            const int softSlot = Port_SoftSlots_TakePendingAssign();
+            if (softSlot >= 0 && menuSlot != MENU_SLOT_SAVE_BUTTON && gPauseMenu.items[menuSlot] != 0) {
+                Port_SoftSlots_SetAssignment(softSlot, (unsigned char)gPauseMenu.items[menuSlot]);
+                SoundReq(SFX_TEXTBOX_SELECT);
+            }
+        }
+#endif
         switch (gInput.newKeys) {
             case A_BUTTON:
                 if (menuSlot == MENU_SLOT_SAVE_BUTTON) {

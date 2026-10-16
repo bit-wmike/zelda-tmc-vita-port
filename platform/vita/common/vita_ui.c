@@ -277,7 +277,9 @@ static const MenuItem kControlItems[] = {
     TOGGLE("L + R: Pegasusstiefel", NULL, Boots),
     TOGGLE("L + Select: Okarina", NULL, Ocarina),
     TOGGLE("L + Kreuz/Kreis: Zusatz-Items", "Zusatz-Items wie Dreieck/Viereck \xc3\xbc" "ber L ausl\xc3\xb6sen.", SecondLAB),
-    TOGGLE("Select halten im Men\xc3\xbc = Zusatz-Slot", "Im Pausemen\xc3\xbc Select halten + Kreuz/Kreis legt auf Dreieck/Viereck.",
+    TOGGLE("Select halten im Men\xc3\xbc = Zusatz-Slot",
+           "Zusatz-Slots belegen: im Pausemen\xc3\xbc ein Item markieren und Dreieck, Viereck oder den rechten Stick "
+           "links/rechts dr\xc3\xbc" "cken. Oder Select halten + Kreuz/Kreis.",
            SelectEquip),
     TOGGLE("Muscheln bis 9999", NULL, Shells),
     TOGGLE("Kein Ezlo-Hinweis nach dem Laden", NULL, NoEzloResume),
@@ -390,6 +392,7 @@ static void ItemActivate(const MenuItem* it) {
 #define TAB_H 44
 #define ROW_H 34
 #define ROWS_VISIBLE 10
+static void DrawHelp(const char* help);
 #define LIST_Y (PANEL_Y + TAB_H + 14)
 
 static void OpenMenu(void) {
@@ -626,8 +629,39 @@ static void DrawMenu(void) {
     }
     const MenuItem* cur = &tab->items[sRow];
     const char* help = cur->needsGame && !InGame() ? "Nur im laufenden Spiel verf\xc3\xbc" "gbar." : cur->help;
-    if (help) TmcGfx_Text(PANEL_X + 16, PANEL_Y + PANEL_H - 40, 0.85f, COL_HEADER, help);
+    if (help) DrawHelp(help);
     TmcGfx_Text(PANEL_X + PANEL_W - 150, PANEL_Y + PANEL_H + 6, 0.75f, COL_DIM, "Minish Cap Vita " TMC_PORT_VERSION);
+}
+
+/* Help line under the list: word-wrapped to the panel width, at most two
+ * lines (a longer text is cut at the end of the second line). */
+static void DrawHelp(const char* help) {
+    const int maxW = PANEL_W - 32;
+    const float size = 0.85f;
+    char lines[2][256];
+    int n = 0;
+    const char* p = help;
+    while (*p && n < 2) {
+        int len = 0, lastBreak = -1;
+        char buf[256];
+        while (p[len] && len < 255) {
+            memcpy(buf, p, (size_t)len + 1);
+            buf[len + 1] = 0;
+            if (TmcGfx_TextWidth(size, buf) > maxW) break;
+            if (p[len] == ' ') lastBreak = len;
+            ++len;
+        }
+        int take = len;
+        if (p[len] && lastBreak > 0 && n == 0) take = lastBreak;
+        memcpy(lines[n], p, (size_t)take);
+        lines[n][take] = 0;
+        ++n;
+        p += take;
+        while (*p == ' ') ++p;
+    }
+    const int lineH = 22;
+    int y = PANEL_Y + PANEL_H - 40 - (n - 1) * lineH;
+    for (int i = 0; i < n; ++i, y += lineH) TmcGfx_Text(PANEL_X + 16, y, size, COL_HEADER, lines[i]);
 }
 
 static void DrawSideIcons(void) {

@@ -33,6 +33,10 @@ void Port_SoftSlots_Update(void);
  * a regular B-press and routes it through CreateItemIfInputMatches. */
 bool Port_SoftSlots_IsBHeld(void);
 
+/* Soft-slot button pressed this frame while the pause menu is open (0..3),
+ * or -1. Consumed by the pause item menu to bind the cursor item. */
+int Port_SoftSlots_TakePendingAssign(void);
+
 /* Returns the soft-slot's item if a slot is active, else `saved`. Used by
  * src/playerUtils.c at the B-dispatch site to override the effective
  * equipped[SLOT_B] without touching gSave. */

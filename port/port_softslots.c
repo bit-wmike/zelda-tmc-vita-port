@@ -73,15 +73,39 @@ void Port_SoftSlots_Init(void) {
     sLoaded = true;
 }
 
+/* Set for exactly one frame when a soft-slot button goes down while the
+ * pause menu is open; the pause item menu consumes it to bind the item under
+ * the cursor to that slot (see Port_SoftSlots_TakePendingAssign). */
+static int sPendingAssign = -1;
+
 void Port_SoftSlots_Update(void) {
     Port_SoftSlots_Init();
 
     static bool sPrevHeld[PORT_SOFTSLOT_COUNT] = { false, false, false, false };
+    static bool sPrevRaw[PORT_SOFTSLOT_COUNT] = { false, false, false, false };
     bool nowHeld[PORT_SOFTSLOT_COUNT];
+    bool raw[PORT_SOFTSLOT_COUNT];
     int newlyPressed = -1;
 
+    sPendingAssign = -1;
+    for (int i = 0; i < PORT_SOFTSLOT_COUNT; i++)
+        raw[i] = Port_Config_SoftSlotPressed(i);
+
+    if (Port_SoftSlots_IsPauseActive()) {
+        /* Pause menu open: a soft-slot button assigns instead of firing the
+         * slot (which would inject B and re-equip the cursor item to B).
+         * This is the only way to fill slots 3/4 without the PC overlay. */
+        for (int i = 0; i < PORT_SOFTSLOT_COUNT; i++)
+            if (raw[i] && !sPrevRaw[i]) sPendingAssign = i;
+        memcpy(sPrevRaw, raw, sizeof(sPrevRaw));
+        memset(sPrevHeld, 0, sizeof(sPrevHeld));
+        sActiveSlot = -1;
+        return;
+    }
+    memcpy(sPrevRaw, raw, sizeof(sPrevRaw));
+
     for (int i = 0; i < PORT_SOFTSLOT_COUNT; i++) {
-        nowHeld[i] = Port_Config_SoftSlotPressed(i) && sAssignments[i] != 0;
+        nowHeld[i] = raw[i] && sAssignments[i] != 0;
         if (nowHeld[i] && !sPrevHeld[i]) {
             /* Later iterations overwrite, giving last-iterated == highest-
              * index newly-pressed slot priority. */
@@ -105,6 +129,12 @@ void Port_SoftSlots_Update(void) {
 
     sActiveSlot = chosen;
     memcpy(sPrevHeld, nowHeld, sizeof(sPrevHeld));
+}
+
+int Port_SoftSlots_TakePendingAssign(void) {
+    const int s = sPendingAssign;
+    sPendingAssign = -1;
+    return s;
 }
 
 bool Port_SoftSlots_IsBHeld(void) {

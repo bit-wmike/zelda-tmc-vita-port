@@ -2,6 +2,9 @@
 #include "gba/io_reg.h"
 #include "main.h"
 #include "port_audio.h"
+#ifdef TMC_VITA
+#include "port_softslots.h"
+#endif
 #include "port_asset_loader.h"
 #include "port_gba_mem.h"
 #include "port_hdma.h"
@@ -724,7 +727,22 @@ void VBlankIntrWait(void) {
             Platform3DS_MarkFrameDiscontinuity(OLD3DS_FRAME_PACER_DISCONTINUITY_APT);
         }
     }
+#ifdef TMC_VITA
+    {
+        /* Port_UpdateInput() (desktop path) is not used on the handheld
+         * builds, so the soft item slots never ran there: triangle/square/
+         * right stick/rear touch did nothing. Do the same three steps here:
+         * resolve the active slot, fire it as a B press, and age the
+         * pause-menu flag (without TickPause it would stay set forever). */
+        u16 keyinput = Platform3DS_ReadKeyInput();
+        Port_SoftSlots_Update();
+        if (Port_SoftSlots_IsBHeld()) keyinput &= ~B_BUTTON;
+        Port_SoftSlots_TickPause();
+        gba_write16(REG_ADDR_KEYINPUT, keyinput);
+    }
+#else
     gba_write16(REG_ADDR_KEYINPUT, Platform3DS_ReadKeyInput());
+#endif
     {
         extern void Port_QuickSave_AutoTick(void);
         Port_QuickSave_AutoTick();
