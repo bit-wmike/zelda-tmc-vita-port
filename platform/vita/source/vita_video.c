@@ -11,6 +11,7 @@
  */
 #include "tmc_platform.h"
 #include "tmc_gfx.h"
+#include "tmc_diag.h"
 
 #include <psp2/display.h>
 #include <psp2/kernel/threadmgr.h>
@@ -33,7 +34,9 @@ extern int TmcVita_DisplayStyle(void);
 extern void TmcVita_DrawUi(void);
 
 bool TmcVitaVideo_Init(void) {
-    if (vita2d_init() < 0) return false;
+    const int rc = vita2d_init();
+    TmcDiag_Logf("[video] vita2d_init=%d\n", rc);
+    if (rc < 0) return false;
     vita2d_set_clear_color(RGBA8(0, 0, 0, 255));
     vita2d_set_vblank_wait(1);
     for (int i = 0; i < 2; ++i) {
@@ -43,6 +46,8 @@ bool TmcVitaVideo_Init(void) {
     sSharpTarget = vita2d_create_empty_texture_rendertarget(TEX_W * SHARP_SCALE, TEX_H * SHARP_SCALE,
                                                             SCE_GXM_TEXTURE_FORMAT_A8B8G8R8);
     sFont = vita2d_load_default_pgf();
+    TmcDiag_Logf("[video] textures=%p,%p sharp=%p font=%p\n", (void*)sTex[0], (void*)sTex[1], (void*)sSharpTarget,
+                 (void*)sFont);
     sReady = true;
     return true;
 }
@@ -73,7 +78,10 @@ void TmcVideo_Present(const uint32_t* pixels, int width, int height, int pitch, 
     if (!sReady) return;
     if (width > TEX_W) width = TEX_W;
     if (height > TEX_H) height = TEX_H;
+    const uint64_t tWait = TmcSys_TimeUs();
     vita2d_wait_rendering_done();
+    const uint64_t tDraw = TmcSys_TimeUs();
+    TmcDiag_Stage(TMC_DIAG_VSYNC, tDraw - tWait);
     vita2d_texture* tex = sTex[sTexIndex];
     sTexIndex ^= 1;
     Upload(tex, pixels, width, height, pitch);
@@ -106,6 +114,7 @@ void TmcVideo_Present(const uint32_t* pixels, int width, int height, int pitch, 
     TmcVita_DrawUi();
     vita2d_end_drawing();
     vita2d_swap_buffers();
+    TmcDiag_Stage(TMC_DIAG_DRAW, TmcSys_TimeUs() - tDraw);
 }
 
 /* ---- UI drawing helpers ---- */

@@ -114,3 +114,7 @@ void TmcAudio_Close(void) {
     if (sWav) fclose(sWav);
     sWav = NULL;
 }
+
+void TmcDiag_LogSystemInfo(void) { fprintf(stderr, "[sys] host build\n"); }
+const char* TmcDiag_MemoryText(void) { return "host"; }
+void TmcDiag_LogSettings(void) {}

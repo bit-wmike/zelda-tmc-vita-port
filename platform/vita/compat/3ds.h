@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #ifdef __cplusplus
@@ -91,6 +92,7 @@ static inline Thread threadCreate(ThreadFunc entry, void* arg, size_t stackSize,
     int rc = pthread_create(&t->handle, &attr, TmcCompat_ThreadTrampoline, t);
     pthread_attr_destroy(&attr);
     if (rc != 0) {
+        fprintf(stderr, "[thread] pthread_create failed rc=%d\n", rc);
         free(t);
         return NULL;
     }

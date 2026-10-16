@@ -8,6 +8,7 @@
  */
 #include "platform_3ds.h"
 #include "tmc_platform.h"
+#include "tmc_diag.h"
 
 #include "port_audio.h"
 #include "port_ppu.h"
@@ -38,6 +39,7 @@ extern bool TmcVitaVideo_Init(void);
 extern void TmcVitaSys_Init(void);
 extern void TmcVitaSys_OpenLog(const char* path);
 extern void TmcVitaUi_Init(void);
+extern void TmcDiag_LogSettings(void);
 
 static int HasGbaExtension(const char* name) {
     const size_t n = strlen(name);
@@ -95,7 +97,13 @@ int main(int argc, char** argv) {
     mkdir("ux0:data", 0777);
     mkdir(APP_DIR, 0777);
     chdir(APP_DIR);
+    /* Keep the previous run's log: after a crash the next start would
+     * otherwise overwrite the evidence. */
+    remove(APP_DIR "/log_prev.txt");
+    rename(APP_DIR "/log.txt", APP_DIR "/log_prev.txt");
     TmcVitaSys_OpenLog(APP_DIR "/log.txt");
+    TmcSys_Log("The Minish Cap Vita " TMC_PORT_VERSION "\n");
+    TmcDiag_LogSystemInfo();
     TmcVitaSys_Init();
     if (!TmcVitaVideo_Init()) {
         TmcSys_Log("video init failed\n");
@@ -105,6 +113,7 @@ int main(int argc, char** argv) {
 
     char romPath[512];
     const int found = FindRom(romPath, sizeof(romPath));
+    TmcDiag_Logf("[rom] search result=%d\n", found);
     if (found <= 0) {
         TmcSys_Fatal(found < 0 ? "ROM nicht unterstuetzt / Unsupported ROM" : "ROM nicht gefunden / ROM not found",
                      "Kopiere dein eigenes ROM von The Minish Cap (Europa oder USA)\n"
@@ -115,11 +124,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    TmcSys_Log("The Minish Cap Vita " TMC_PORT_VERSION "\n");
-    TmcSys_Log("ROM: ");
-    TmcSys_Log(romPath);
-    TmcSys_Log("\n");
+    TmcDiag_Logf("[rom] %s\n", romPath);
     Port_Config_Load("tmcvita.ini");
+    TmcDiag_LogSettings();
     Port_LoadRom(romPath);
     TmcSys_Log("[vita] ROM loaded\n");
     TmcVitaUi_Init();

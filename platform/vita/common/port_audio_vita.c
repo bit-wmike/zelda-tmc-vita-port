@@ -6,6 +6,7 @@
 #include "port_audio.h"
 #include "port_m4a_backend.h"
 #include "tmc_platform.h"
+#include "tmc_diag.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -32,14 +33,23 @@ static void* AudioThread(void* arg) {
     TmcSys_PinThread(-1);
     TmcSys_BoostThreadPriority();
     int index = 0;
+    const uint64_t bufferUs = (uint64_t)BUFFER_FRAMES * 1000000u / TMC_AUDIO_RATE;
+    uint64_t lastOut = 0;
     while (sRunning) {
         int16_t* buf = sBuffer[index];
+        const uint64_t t0 = TmcSys_TimeUs();
         if (sPaused) {
             memset(buf, 0, sizeof(sBuffer[0]));
         } else {
             Port_M4A_Backend_Render(buf, BUFFER_FRAMES, false);
         }
+        const uint64_t t1 = TmcSys_TimeUs();
+        /* The output blocks until the hardware wants the next buffer, so a
+         * gap clearly longer than one buffer means the queue ran dry. */
+        const bool underrun = lastOut != 0 && !sPaused && (t1 - lastOut) > bufferUs * 2;
+        TmcDiag_AudioBuffer(t1 - t0, underrun);
         TmcAudio_Output(buf);
+        lastOut = TmcSys_TimeUs();
         index ^= 1;
     }
     return NULL;
@@ -47,7 +57,11 @@ static void* AudioThread(void* arg) {
 
 bool Port_Audio_Init(void) {
     if (sInitialized) return true;
-    if (!Port_M4A_Backend_Init(TMC_AUDIO_RATE)) return false;
+    if (!Port_M4A_Backend_Init(TMC_AUDIO_RATE)) {
+        TmcDiag_Logf("[audio] mixer init failed\n");
+        return false;
+    }
+    TmcDiag_Logf("[audio] rate=%d frames=%d\n", TMC_AUDIO_RATE, BUFFER_FRAMES);
     if (!TmcAudio_Open(TMC_AUDIO_RATE, BUFFER_FRAMES)) {
         Port_M4A_Backend_Shutdown();
         return false;

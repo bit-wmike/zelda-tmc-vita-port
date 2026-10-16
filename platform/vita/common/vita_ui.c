@@ -8,6 +8,7 @@
  */
 #include "tmc_platform.h"
 #include "tmc_gfx.h"
+#include "tmc_diag.h"
 
 #include "port_debug_actions.h"
 #include "port_debug_query.h"
@@ -80,6 +81,7 @@ static uint64_t sTouchStartUs;
 static bool sTouchMoved;
 
 static void Toast(const char* text) {
+    TmcDiag_Logf("[ui] %s\n", text);
     snprintf(sToast, sizeof(sToast), "%s", text);
     sToastUntil = TmcSys_TimeUs() + 2000000u;
 }
@@ -323,6 +325,11 @@ static const char* ItemValueText(const MenuItem* it, char* buf, size_t n) {
     }
 }
 
+static void LogItem(const MenuItem* it) {
+    char buf[32];
+    TmcDiag_Logf("[ui] %s = %s\n", it->label, ItemValueText(it, buf, sizeof(buf)));
+}
+
 static void ItemAdjust(const MenuItem* it, int dir) {
     if (it->needsGame && !InGame()) return;
     switch (it->type) {
@@ -345,6 +352,7 @@ static void ItemAdjust(const MenuItem* it, int dir) {
         }
         default: break;
     }
+    LogItem(it);
 }
 
 static void ItemActivate(const MenuItem* it) {
@@ -352,7 +360,10 @@ static void ItemActivate(const MenuItem* it) {
         Toast("Nur im laufenden Spiel");
         return;
     }
-    if (it->type == IT_ACTION) it->action();
+    if (it->type == IT_ACTION) {
+        TmcDiag_Logf("[ui] action: %s\n", it->label);
+        it->action();
+    }
     else ItemAdjust(it, +1);
 }
 
@@ -369,11 +380,13 @@ static void ItemActivate(const MenuItem* it) {
 #define LIST_Y (PANEL_Y + TAB_H + 14)
 
 static void OpenMenu(void) {
+    TmcDiag_Logf("[ui] menu open\n");
     sMode = UI_MENU;
     if (sWarpCount == 0) BuildWarpList();
 }
 
 static void CloseUi(void) {
+    TmcDiag_Logf("[ui] close (mode %d)\n", sMode);
     sMode = UI_NONE;
     sClosing = true;
 }
@@ -489,7 +502,10 @@ void TmcVita_OnInputPolled(const TmcInputState* input, uint32_t down) {
 
     if (sMode == UI_NONE) {
         if (down & TMC_KEY_MENU) OpenMenu();
-        else if ((down & TMC_KEY_OVERLAY) && InGame()) sMode = UI_OVERLAY;
+        else if ((down & TMC_KEY_OVERLAY) && InGame()) {
+            TmcDiag_Logf("[ui] overlay open\n");
+            sMode = UI_OVERLAY;
+        }
     } else if (sMode == UI_MENU) {
         MenuInput(down, held);
     } else if (sMode == UI_OVERLAY) {

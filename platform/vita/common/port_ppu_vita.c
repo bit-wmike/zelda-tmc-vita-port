@@ -17,6 +17,7 @@
 #include "platform_3ds.h"
 #include "tmc_platform.h"
 #include "top_view_3ds.h"
+#include "tmc_diag.h"
 
 #include "virtuappu.h"
 #include "cpu/mode1.h"
@@ -111,6 +112,9 @@ void Port_PPU_Init(SDL_Window* window) {
 
 void Port_PPU_PresentFrame(void) {
     if (!sInitialized) return;
+    static uint64_t sLastPresentEnd;
+    const uint64_t tStart = TmcSys_TimeUs();
+    if (sLastPresentEnd) TmcDiag_Stage(TMC_DIAG_LOGIC, tStart - sLastPresentEnd);
     ++sFrameCount;
     extern void TmcVita_FpsTick(void);
     TmcVita_FpsTick();
@@ -132,6 +136,7 @@ void Port_PPU_PresentFrame(void) {
         port_hdma_dest_overlaps(gIoMem + MODE1_IO_BG3HOFS, gIoMem + MODE1_IO_BG3VOFS + 2) != 0;
 
     virtuappu_render_frame();
+    TmcDiag_Stage(TMC_DIAG_PPU, TmcSys_TimeUs() - tStart);
     if (getenv("TMC_PPU_DEBUG") && (sFrameCount % 60) == 0) {
         char line[200];
         snprintf(line, sizeof(line), "[ppu] fv=%d reason=%d w=%d f=%u dispcnt=%04x bldy=%02x pal0=%04x pal1=%04x px=%08x task=%d\n",
@@ -144,6 +149,8 @@ void Port_PPU_PresentFrame(void) {
     int h = sFrameHeight;
     TmcVita_BeforePresent(sFrame, &w, &h, FRAME_PITCH);
     TmcVideo_Present(sFrame, w, h, FRAME_PITCH, !Platform3DS_TurboHeld());
+    TmcDiag_FrameDone();
+    sLastPresentEnd = TmcSys_TimeUs();
 }
 
 int TmcVita_FrameWidth(void) { return sFrameWidth; }

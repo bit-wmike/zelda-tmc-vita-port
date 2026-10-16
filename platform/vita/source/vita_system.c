@@ -159,6 +159,9 @@ bool TmcAudio_Open(int sampleRate, int frames) {
     sAudioFrames = frames;
     sAudioPort = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM, frames, sampleRate,
                                      SCE_AUDIO_OUT_MODE_STEREO);
+    char line[64];
+    snprintf(line, sizeof(line), "[audio] port=0x%08x\n", (unsigned)sAudioPort);
+    TmcSys_Log(line);
     if (sAudioPort < 0) return false;
     int vol[2] = { SCE_AUDIO_VOLUME_0DB, SCE_AUDIO_VOLUME_0DB };
     sceAudioOutSetVolume(sAudioPort, SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vol);

@@ -5,6 +5,7 @@
  */
 #include "platform_3ds.h"
 #include "tmc_platform.h"
+#include "tmc_diag.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -28,6 +29,12 @@ static void PollInput(void) {
     sPrevHeld = sHeld;
     sHeld = sInput.held;
     sDown = sHeld & ~sPrevHeld;
+    static int sLoggedPresses;
+    if (sDown && sLoggedPresses < 20) {
+        ++sLoggedPresses;
+        TmcDiag_Logf("[input] down=0x%08x stick=%.2f,%.2f touch=%d\n", (unsigned)sDown, (double)sInput.stickX,
+                     (double)sInput.stickY, (int)sInput.touchActive);
+    }
     if (TmcSys_ShouldQuit())
         sQuit = true;
     TmcVita_OnInputPolled(&sInput, sDown);
@@ -169,7 +176,10 @@ uint16_t* Platform3DS_GetFramebuffer(int top, uint16_t* width, uint16_t* height)
 void Platform3DS_Debug(const char* message) { TmcSys_Log(message); }
 void Platform3DS_ShowFatal(const char* title, const char* message) { TmcSys_Fatal(title, message); }
 
-void TmcPlatform_PinCurrentThread(int core) { TmcSys_PinThread(core); }
+void TmcPlatform_PinCurrentThread(int core) {
+    TmcSys_PinThread(core);
+    TmcDiag_Logf("[thread] renderer worker started on core %d\n", core);
+}
 
 /* ---- second-screen (overlay) synchronisation ----
  * The overlay is painted on the main thread on the Vita, but the shared code
