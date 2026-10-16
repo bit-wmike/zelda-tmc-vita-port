@@ -188,3 +188,11 @@ long readlink(const char* path, char* buf, unsigned long bufsiz) {
     (void)bufsiz;
     return -1;
 }
+
+/* libgcc's emulated TLS (used for the renderer's per-scanline __thread
+ * buffers) only switches to real per-thread storage when it sees
+ * pthread_cancel linked in; it checks a weak reference. Without this
+ * reference all three render threads silently share one buffer, which made
+ * sprites vanish (file-select buttons, menu cursors). Keep it referenced. */
+#include <pthread.h>
+void* volatile gTmcKeepPthreadCancel = (void*)&pthread_cancel;

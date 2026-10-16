@@ -34,6 +34,7 @@ static _Atomic bool sFullView;
 static unsigned sRebornMask;
 static _Atomic bool sRearTouch;
 static _Atomic bool sSideIcons = true;
+static _Atomic bool sRenderThreads = true;
 static _Atomic int sVitaLanguage = -1;
 static int sHasRebornMask;
 static bool sConfigLoaded;
@@ -172,6 +173,7 @@ static void SaveConfig(void) {
     if (sHasRebornMask) fprintf(file, "reborn_mask=%u\n", sRebornMask);
     fprintf(file, "rear_touch=%u\n", sRearTouch ? 1u : 0u);
     fprintf(file, "side_icons=%u\n", sSideIcons ? 1u : 0u);
+    fprintf(file, "render_threads=%u\n", sRenderThreads ? 1u : 0u);
 
     /* Round-trip the performance/research switches. SaveConfig parses these
      * but used to omit them, so any Settings change -- or any exit that saves
@@ -282,6 +284,7 @@ void Port_Config_Load(const char* path) {
             else if (strcmp(key, "full_view") == 0) sFullView = ParseBool(value);
             else if (strcmp(key, "rear_touch") == 0) sRearTouch = ParseBool(value);
             else if (strcmp(key, "side_icons") == 0) sSideIcons = ParseBool(value);
+            else if (strcmp(key, "render_threads") == 0) sRenderThreads = ParseBool(value);
             else if (strcmp(key, "reborn_mask") == 0) { sRebornMask = (unsigned)strtoul(value, NULL, 10); sHasRebornMask = 1; }
         }
         fclose(file);
@@ -537,3 +540,5 @@ void Port_Config_SetVitaDisplayStyle(int style) {
     sDisplayStyle = (Port3DSDisplayStyle)style;
     SaveConfig();
 }
+bool Port_Config_VitaRenderThreads(void) { return sRenderThreads; }
+void Port_Config_SetVitaRenderThreads(bool on) { sRenderThreads = on; SaveConfig(); }

@@ -46,8 +46,9 @@ int Platform3DS_Init(void) { return 1; }
 void Platform3DS_Shutdown(void) {}
 bool Platform3DS_IsRunning(void) { return !sQuit; }
 void TmcVita_RequestQuit(void) { sQuit = true; }
-bool Platform3DS_IsNew3DS(void) { return getenv("TMC_NOTHREADS") == NULL; }
-bool Platform3DS_CanUseCore1(void) { return getenv("TMC_NOTHREADS") == NULL; }
+extern bool Port_Config_VitaRenderThreads(void);
+bool Platform3DS_IsNew3DS(void) { return getenv("TMC_NOTHREADS") == NULL && Port_Config_VitaRenderThreads(); }
+bool Platform3DS_CanUseCore1(void) { return getenv("TMC_NOTHREADS") == NULL && Port_Config_VitaRenderThreads(); }
 unsigned Platform3DS_Core1TimeLimit(void) { return 100; }
 void Platform3DS_ShowSplash(void) {}
 void Platform3DS_EnterGameplayDisplay(void) {}

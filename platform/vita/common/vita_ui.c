@@ -51,6 +51,8 @@ extern bool Port_Config_VitaSideIcons(void);
 extern void Port_Config_SetVitaSideIcons(bool on);
 extern void Port_Config_SetVitaDisplayStyle(int style);
 extern bool Port_Config_VitaFullView(void);
+extern bool Port_Config_VitaRenderThreads(void);
+extern void Port_Config_SetVitaRenderThreads(bool on);
 extern void Port_Config_SetVitaFullView(bool on);
 extern int Port_Config_Get3DSDisplayStyle(void);
 extern int Port_DebugAction_AreaIsWarpable(unsigned char area);
@@ -131,6 +133,11 @@ static void SetVolume(int v) {
 }
 static int GetFps(void) { return Port_Config_GetShowFps(); }
 static void SetFps(int v) { Port_Config_SetShowFps(v != 0); }
+static int GetThreads(void) { return Port_Config_VitaRenderThreads(); }
+static void SetThreads(int v) {
+    Port_Config_SetVitaRenderThreads(v != 0);
+    Toast("Wirkt nach dem n\xc3\xa4" "chsten Start");
+}
 static int GetIcons(void) { return Port_Config_VitaSideIcons(); }
 static void SetIcons(int v) { Port_Config_SetVitaSideIcons(v != 0); }
 static int GetRear(void) { return Port_Config_VitaRearTouch(); }
@@ -252,6 +259,7 @@ static const MenuItem kDisplayItems[] = {
     TOGGLE("FPS anzeigen", NULL, Fps),
     TOGGLE("Symbole am Rand", "Kleine Karten- und Men\xc3\xbc-Symbole in den schwarzen R\xc3\xa4ndern (antippbar).",
            Icons),
+    TOGGLE("Mehrkern-Bildaufbau", "Verteilt den Bildaufbau auf 3 CPU-Kerne. Wirkt nach Neustart.", Threads),
 };
 
 static const MenuItem kControlItems[] = {

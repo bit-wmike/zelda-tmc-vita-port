@@ -58,7 +58,7 @@ PORT_SRC := $(addprefix $(ROOT)/,\
     port/ppu/src/virtuappu.c port/ppu/src/mode1.c)
 
 COMMON_SRC := $(wildcard common/*.c)
-ifeq ($(TARGET),host)
+ifneq ($(filter host armhost,$(TARGET)),)
 PLAT_SRC := $(wildcard host/*.c) $(COMMON_SRC)
 else
 PLAT_SRC := $(wildcard source/*.c) $(COMMON_SRC)
@@ -85,6 +85,14 @@ CXX := g++ -m32
 ARCH_FLAGS := -g -pthread
 LDLIBS := -lm -pthread
 OUT := $(BUILD)/tmc_host
+else ifeq ($(TARGET),armhost)
+# Same headless harness, compiled for 32-bit ARMv7 hard-float like the Vita
+# and run under qemu-arm: catches ARM-only code generation differences.
+CC := arm-linux-gnueabihf-gcc
+CXX := arm-linux-gnueabihf-g++
+ARCH_FLAGS := -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb -g -pthread
+LDLIBS := -lm -pthread -static
+OUT := $(BUILD)/tmc_armhost
 else
 PREFIX := arm-vita-eabi
 CC := $(VITASDK)/bin/$(PREFIX)-gcc

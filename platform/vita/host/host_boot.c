@@ -30,7 +30,27 @@ void TmcPlatform_FrameHook(void) {
         const char* e = getenv("TMC_BOOT");
         active = e && sscanf(e, "%x,%x,%x,%x", &a, &r, &x, &y) == 4;
     }
-    if (!active) return;
+    if (getenv("TMC_OAM_DUMP") && sFrame == (unsigned)atoi(getenv("TMC_OAM_DUMP"))) {
+        extern u16 gOamMem[0x200];
+        extern u8 gIoMem[0x400];
+        fprintf(stderr, "[oam] dispcnt=%04x bldcnt=%04x bldalpha=%04x win0h=%04x winin=%04x winout=%04x\n",
+                gIoMem[0] | gIoMem[1] << 8, gIoMem[0x50] | gIoMem[0x51] << 8, gIoMem[0x52] | gIoMem[0x53] << 8,
+                gIoMem[0x40] | gIoMem[0x41] << 8, gIoMem[0x48] | gIoMem[0x49] << 8, gIoMem[0x4a] | gIoMem[0x4b] << 8);
+        for (int i = 0; i < 128; ++i) {
+            u16 a0 = gOamMem[i * 4], a1 = gOamMem[i * 4 + 1], a2 = gOamMem[i * 4 + 2];
+            if ((a0 & 0x300) == 0x200) continue; /* disabled */
+            fprintf(stderr, "[oam] %3d y=%3d x=%3d shape=%d size=%d mode=%d aff=%d tile=%d prio=%d pal=%d\n", i,
+                    a0 & 0xff, a1 & 0x1ff, a0 >> 14, a1 >> 14, (a0 >> 10) & 3, (a0 >> 8) & 1, a2 & 0x3ff,
+                    (a2 >> 10) & 3, a2 >> 12);
+        }
+    }
+    if (!active) {
+        if (getenv("TMC_LANG_EARLY") && sFrame == 60) {
+            gSaveHeader->language = (u8)atoi(getenv("TMC_LANG_EARLY"));
+            fprintf(stderr, "[boot] language forced to %d\n", gSaveHeader->language);
+        }
+        return;
+    }
     if (!booted && gMain.task == TASK_TITLE && sFrame >= 30 && (sFrame & 0xF) < 3)
         gHostForcedKeys = 8; /* START */
     if (!booted && gMain.task == TASK_FILE_SELECT && sFrame > 60) {
