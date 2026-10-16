@@ -22,7 +22,6 @@
 
 #define TEX_W 400
 #define TEX_H 240
-#define SHARP_SCALE 3
 
 static vita2d_texture* sTex[2];
 static vita2d_texture* sSharpTarget;
@@ -43,8 +42,9 @@ bool TmcVitaVideo_Init(void) {
         sTex[i] = vita2d_create_empty_texture_format(TEX_W, TEX_H, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR);
         if (!sTex[i]) return false;
     }
-    sSharpTarget = vita2d_create_empty_texture_rendertarget(TEX_W * SHARP_SCALE, TEX_H * SHARP_SCALE,
-                                                            SCE_GXM_TEXTURE_FORMAT_A8B8G8R8);
+    /* vita2d always projects to 960x544, so the off-screen target must have
+     * exactly that size or everything drawn into it ends up scaled/offset. */
+    sSharpTarget = vita2d_create_empty_texture_rendertarget(960, 544, SCE_GXM_TEXTURE_FORMAT_A8B8G8R8);
     sFont = vita2d_load_default_pgf();
     TmcDiag_Logf("[video] textures=%p,%p sharp=%p font=%p\n", (void*)sTex[0], (void*)sTex[1], (void*)sSharpTarget,
                  (void*)sFont);
@@ -92,18 +92,22 @@ void TmcVideo_Present(const uint32_t* pixels, int width, int height, int pitch, 
     GameRect(width, height, style, &scale, &dx, &dy);
     vita2d_pool_reset();
     if (style == 1 && sSharpTarget) {
-        /* Pass 1: nearest-neighbour 3x into the off-screen target. */
+        /* Largest whole-number upscale that still fits the 960x544 target
+         * (3x for the normal views, 2x for 400x240 Full View). */
+        int k = 960 / width;
+        if (544 / height < k) k = 544 / height;
+        if (k < 1) k = 1;
+        /* Pass 1: nearest-neighbour k-times into the off-screen target. */
         vita2d_start_drawing_advanced(sSharpTarget, SCE_GXM_SCENE_FRAGMENT_SET_DEPENDENCY);
         vita2d_texture_set_filters(tex, SCE_GXM_TEXTURE_FILTER_POINT, SCE_GXM_TEXTURE_FILTER_POINT);
-        vita2d_draw_texture_part_scale(tex, 0, 0, 0, 0, width, height, SHARP_SCALE, SHARP_SCALE);
+        vita2d_draw_texture_part_scale(tex, 0, 0, 0, 0, width, height, (float)k, (float)k);
         vita2d_end_drawing();
-        /* Pass 2: bilinear scale to the screen. */
+        /* Pass 2: bilinear scale of that block to full screen height. */
         vita2d_start_drawing_advanced(NULL, SCE_GXM_SCENE_VERTEX_WAIT_FOR_DEPENDENCY);
         vita2d_clear_screen();
         vita2d_texture_set_filters(sSharpTarget, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
-        const float s2 = scale / SHARP_SCALE;
-        vita2d_draw_texture_part_scale(sSharpTarget, dx, dy, 0, 0, width * SHARP_SCALE, height * SHARP_SCALE,
-                                       s2, s2);
+        const float s2 = scale / (float)k;
+        vita2d_draw_texture_part_scale(sSharpTarget, dx, dy, 0, 0, (float)(width * k), (float)(height * k), s2, s2);
     } else {
         vita2d_start_drawing_advanced(NULL, 0);
         vita2d_clear_screen();
