@@ -8,9 +8,10 @@ documented by [Prof9's Minish Cap EU Backport](https://github.com/Prof9/Minish-C
   identified older vanilla save can recover that offer after a durable profile
   backup; completed fusions and unsupported profiles are excluded from this repair.
 - Stockwell sells the missing 600-Rupee bomb bag upgrade after the wallet and
-  boomerang prerequisites. The added offer uses original English wording and
-  the active ROM's purchase menu. The European item-receipt message remains
-  European.
+  boomerang prerequisites. The added offer text (the EU ROM has no message for
+  it) is localized for all five European languages, worded after the ROM's own
+  shop offers, and chains to the active ROM's purchase menu. The European
+  item-receipt message remains European.
 - The Ocarina works on the Wind Tribe tower roof using the port's shared area
   permission flag.
 

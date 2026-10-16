@@ -133,12 +133,33 @@ void sub_0805EEB4(Token* token, u32 textIndex) {
     token->textIndex = (u16)textIndex;
 #ifdef PC_PORT
     if (REGION_IS_EU && textIndex == TEXT_INDEX(TEXT_STOCKWELL, 0x25)) {
-        /* Original English wording for the added EU shop item; the final
-         * control code chains to the active ROM's existing buy/cancel menu. */
-        static const u8 bombBagOffer[] =
-            "Bomb bag upgrade: \x06\x01 Rupees.\n"
-            "Increase your bomb capacity.\n\x07\x2c\x14";
-        sub_0805EF40(token, bombBagOffer);
+        /* Offer text for the bomb bag upgrade the EU backport adds to
+         * Stockwell's shop (the EU ROM has no message 0x25 in this bank).
+         * Worded after the ROM's own offers in each language (wallet/quiver
+         * lines, item names from the "got Bomb Bag" message); text is
+         * Latin-1 like the ROM. 06 01 = price, 02 01/02 00 = highlight
+         * on/off, 07 2c 14 chains to the ROM's buy/cancel prompt. String
+         * literals are split after hex escapes so a following letter is
+         * not swallowed into the escape. */
+        static const u8 offerEN[] = "Bomb bag upgrade: \x06\x01 Rupees.\n"
+                                    "Increase your bomb capacity.\n\x07\x2c\x14";
+        static const u8 offerFR[] = "Un \x02\x01" "Grand Sac de Bombes\x02\x00: \x06\x01 Rubis!\n"
+                                    "Tu pourras porter plus de \x02\x01" "Bombes\x02\x00!\n\x07\x2c\x14";
+        static const u8 offerDE[] = "Eine \x02\x01" "Bombentasche\x02\x00. Macht \x06\x01 Rubine.\n"
+                                    "Damit kannst du mehr \x02\x01" "Bomben \x02\x00tragen.\n\x07\x2c\x14";
+        static const u8 offerES[] = "\x02\x01" "El saco de bombas\x02\x00 cuesta \x06\x01 rupias.\n"
+                                    "\xa1" "Podr\xe1s llevar muchas m\xe1s bombas!\n\x07\x2c\x14";
+        static const u8 offerIT[] = "\x02\x01" "Portabombe\x02\x00: \x06\x01  Rupie.\n"
+                                    "Cos\xec puoi portare pi\xf9 bombe!\n\x07\x2c\x14";
+        const u8* offer = offerEN;
+        switch (gSaveHeader->language) { /* EU slots: 2 EN, 3 FR, 4 DE, 5 ES, 6 IT */
+            case EU_LANGUAGE_EN_SLOT + 1: offer = offerFR; break;
+            case EU_LANGUAGE_EN_SLOT + 2: offer = offerDE; break;
+            case EU_LANGUAGE_EN_SLOT + 3: offer = offerES; break;
+            case EU_LANGUAGE_EN_SLOT + 4: offer = offerIT; break;
+            default: break;
+        }
+        sub_0805EF40(token, offer);
         return;
     }
 #endif
