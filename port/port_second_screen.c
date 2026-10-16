@@ -2175,7 +2175,7 @@ static int GetSettingState(int row, char* out, int outCap) {
  * hierarchy and tap language as the sibling port; Minish Cap's decoded
  * parchment, chips, font, and palette keep it native to this game. */
 #ifdef TMC_3DS
-#include "../platform/3ds/source/update_ui_3ds.inc"
+#include "update_ui_3ds.inc"
 #endif
 
 static void PaintSettingsPanel(const SSurf* s, const SecondScreenSnapshot* snap, TargetList* tl, float rx0,

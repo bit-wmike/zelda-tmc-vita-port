@@ -706,9 +706,16 @@ void VBlankIntrWait(void) {
     {
         extern bool Port_SecondScreen_3DS_UpdateOpen(void);
         extern void Port_Audio_3DSSetPaused(bool paused);
-        if (Port_SecondScreen_3DS_UpdateOpen()) {
+#ifdef TMC_VITA
+        /* Vita: the options/cheat menu and the map overlay freeze the game. */
+        extern bool TmcVita_ShouldFreeze(void);
+#define TMC_FREEZE_OPEN() (Port_SecondScreen_3DS_UpdateOpen() || TmcVita_ShouldFreeze())
+#else
+#define TMC_FREEZE_OPEN() Port_SecondScreen_3DS_UpdateOpen()
+#endif
+        if (TMC_FREEZE_OPEN()) {
             Port_Audio_3DSSetPaused(true);
-            while (Platform3DS_IsRunning() && Port_SecondScreen_3DS_UpdateOpen()) {
+            while (Platform3DS_IsRunning() && TMC_FREEZE_OPEN()) {
                 Port_PPU_PresentFrame();
                 Platform3DS_WaitForVBlank();
                 port_hdma_vblank_reset();
