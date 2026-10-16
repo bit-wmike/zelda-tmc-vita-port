@@ -9,6 +9,9 @@
 
 #include <pthread.h>
 #include <stdarg.h>
+#ifdef __vita__
+#include <psp2/display.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -135,6 +138,57 @@ extern bool TmcVita_GamePaused(void);
 extern bool Port_Config_VitaHalfRate(void);
 static unsigned sHalfRatePhase;
 
+/* ---- game speed guard (Vita) ----
+ * The game logic runs one frame per display refresh. A frame that takes
+ * longer than a refresh to draw used to slow the whole game down. Instead
+ * the logic frames are counted against the display's refresh counter; when
+ * the game has fallen two refreshes behind (three in 30 fps mode), the next
+ * frame is computed but not drawn, so it catches up at once. The speed stays
+ * exact and only the frame rate dips. Long stalls (loading, menus) are not
+ * caught up - the counter is simply re-anchored. */
+static bool sPaceValid;
+static unsigned sPaceBase;
+static unsigned sPaceFrames;
+static unsigned sPaceSkipRun;
+static uint32_t sPaceSkips;
+
+uint32_t TmcVita_TakeCatchUpSkips(void) {
+    const uint32_t n = sPaceSkips;
+    sPaceSkips = 0;
+    return n;
+}
+
+static bool PaceAllowsPresent(bool present, int threshold) {
+#ifdef __vita__
+    const unsigned now = (unsigned)sceDisplayGetVcount();
+    if (!sPaceValid) {
+        sPaceValid = true;
+        sPaceBase = now;
+        sPaceFrames = 0;
+        sPaceSkipRun = 0;
+        return present;
+    }
+    ++sPaceFrames;
+    const int lag = (int)(now - (sPaceBase + sPaceFrames));
+    if (lag > 8 || lag < -3) {
+        sPaceBase = now;
+        sPaceFrames = 0;
+        sPaceSkipRun = 0;
+        return present;
+    }
+    if (present && lag >= threshold && sPaceSkipRun < 2) {
+        ++sPaceSkipRun;
+        ++sPaceSkips;
+        return false;
+    }
+    if (present) sPaceSkipRun = 0;
+    return present;
+#else
+    (void)threshold;
+    return present;
+#endif
+}
+
 bool Platform3DS_BeginFrameBoundary(void) {
     if (!Platform3DS_TurboHeld()) {
         sTurboPhase = 0;
@@ -143,10 +197,11 @@ bool Platform3DS_BeginFrameBoundary(void) {
          * display refreshes per shown frame, so the speed stays exact. */
         if (Port_Config_VitaHalfRate()) {
             sHalfRatePhase ^= 1u;
-            return sHalfRatePhase == 0;
+            return PaceAllowsPresent(sHalfRatePhase == 0, 3);
         }
-        return true;
+        return PaceAllowsPresent(true, 2);
     }
+    sPaceValid = false;
     sTurboPhase = (sTurboPhase + 1) % sTurboMultiplier;
     return sTurboPhase == 0;
 }
@@ -160,7 +215,10 @@ void Platform3DS_WaitForVBlank(void) {
 }
 
 void Platform3DS_PumpWithoutVBlank(void) { PollInput(); }
-void Platform3DS_MarkFrameDiscontinuity(Old3DSFramePacerDiscontinuity reason) { (void)reason; }
+void Platform3DS_MarkFrameDiscontinuity(Old3DSFramePacerDiscontinuity reason) {
+    (void)reason;
+    sPaceValid = false;
+}
 
 /* ---- diagnostics ---- */
 void Platform3DS_SetStage(uint32_t stage) { (void)stage; }

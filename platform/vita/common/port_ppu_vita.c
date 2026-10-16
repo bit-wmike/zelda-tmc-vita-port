@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #define GBA_NATIVE_W 240
 #define GBA_NATIVE_H 160
@@ -111,7 +112,16 @@ void Port_PPU_Init(SDL_Window* window) {
     }
     VirtuaPPUMode1GbaMemory memory = { gIoMem, gVram, gBgPltt, gObjPltt, gOamMem };
     virtuappu_mode1_bind_gba_memory(&memory);
-    virtuappu_mode1_set_old3ds_profile(false);
+#ifdef __vita__
+    /* The renderer's "Old 3DS" profile: exact fast paths for the common
+     * line layouts (Hyrule Field alpha, UI alpha, title) and small lookup
+     * tables that suit the Vita's 32 KiB L1 cache. Same pixels as the
+     * default profile (checked frame by frame), about twice as fast. */
+    virtuappu_mode1_set_old3ds_profile(true);
+#else
+    /* Test host: TMC_OLD3DS_PROFILE=1 selects the Old 3DS fast paths. */
+    virtuappu_mode1_set_old3ds_profile(getenv("TMC_OLD3DS_PROFILE") != NULL);
+#endif
     sColorCorrection = Port_Config_GetColorCorrection();
     virtuappu_mode1_set_color_correction(sColorCorrection);
     Port_Widescreen_SetWindowPixels(960, 544);
@@ -122,6 +132,10 @@ void Port_PPU_Init(SDL_Window* window) {
     virtuappu_mode1_set_output_buffer(sFrame, FRAME_PITCH);
     sInitialized = true;
 }
+
+#ifndef __vita__
+__attribute__((noinline)) void TmcHost_TimedRender(void) { virtuappu_render_frame(); }
+#endif
 
 void Port_PPU_PresentFrame(void) {
     if (!sInitialized) return;
@@ -148,7 +162,42 @@ void Port_PPU_PresentFrame(void) {
     virtuappu_mode1_bg3_hdma_native_bounds =
         port_hdma_dest_overlaps(gIoMem + MODE1_IO_BG3HOFS, gIoMem + MODE1_IO_BG3VOFS + 2) != 0;
 
-    virtuappu_render_frame();
+#ifndef __vita__
+    /* Test host: TMC_PPU_TIMING=<first frame> sums the renderer's thread CPU
+     * time from that frame on (run with TMC_NOTHREADS=1) and logs avg/max. */
+    static int sTimingFrom = -2;
+    if (sTimingFrom == -2) {
+        const char* e = getenv("TMC_PPU_TIMING");
+        sTimingFrom = e ? atoi(e) : -1;
+    }
+    struct timespec tsA, tsB;
+    if (sTimingFrom >= 0) clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tsA);
+    if (sTimingFrom >= 0 && (int)sFrameCount >= sTimingFrom)
+        TmcHost_TimedRender(); /* callgrind: --toggle-collect=TmcHost_TimedRender */
+    else
+        virtuappu_render_frame();
+    if (sTimingFrom >= 0) {
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tsB);
+        static uint64_t sSum, sMax, sN;
+        const uint64_t ns = (uint64_t)(tsB.tv_sec - tsA.tv_sec) * 1000000000ull + (uint64_t)(tsB.tv_nsec - tsA.tv_nsec);
+        if ((int)sFrameCount >= sTimingFrom) {
+            sSum += ns;
+            ++sN;
+            if (ns > sMax) sMax = ns;
+            if ((sN % 100u) == 0u) {
+                char line[160];
+                snprintf(line, sizeof(line), "[ppustat] frames=%llu avg=%lluus max=%lluus w=%d h=%d\n",
+                         (unsigned long long)sN, (unsigned long long)(sSum / sN / 1000u),
+                         (unsigned long long)(sMax / 1000u), sFrameWidth, sFrameHeight);
+                TmcSys_Log(line);
+            }
+        }
+    }
+#else
+    /* The opaque map overlay hides the game picture: skip rendering it. */
+    extern bool TmcVita_OverlayCoversGame(void);
+    if (!TmcVita_OverlayCoversGame()) virtuappu_render_frame();
+#endif
     TmcDiag_Stage(TMC_DIAG_PPU, TmcSys_TimeUs() - tStart);
     if (getenv("TMC_PPU_DEBUG") && (sFrameCount % 60) == 0) {
         char line[200];

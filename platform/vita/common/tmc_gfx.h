@@ -18,6 +18,9 @@ int TmcGfx_TextWidth(float size, const char* text);
 /* Draws an ABGR8888 pixel buffer scaled by `scale` at (x,y). */
 void TmcGfx_DrawPixels(const uint32_t* pixels, int width, int height, int pitch, int x, int y, float scale,
                        bool smooth, uint8_t alpha);
+/* Same, but re-uploads the pixels only when `changed` (or the size changed). */
+void TmcGfx_DrawPixelsCached(const uint32_t* pixels, int width, int height, int pitch, int x, int y, float scale,
+                             bool smooth, uint8_t alpha, bool changed);
 
 #ifdef __cplusplus
 }

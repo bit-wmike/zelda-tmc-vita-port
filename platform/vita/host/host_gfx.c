@@ -11,3 +11,8 @@ void TmcGfx_DrawPixels(const uint32_t* pixels, int width, int height, int pitch,
                        bool smooth, uint8_t alpha) {
     (void)pixels; (void)width; (void)height; (void)pitch; (void)x; (void)y; (void)scale; (void)smooth; (void)alpha;
 }
+void TmcGfx_DrawPixelsCached(const uint32_t* pixels, int width, int height, int pitch, int x, int y, float scale,
+                             bool smooth, uint8_t alpha, bool changed) {
+    (void)changed;
+    TmcGfx_DrawPixels(pixels, width, height, pitch, x, y, scale, smooth, alpha);
+}

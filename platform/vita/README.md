@@ -44,8 +44,8 @@ Die Belegung wird in `ux0:data/tmc/tmc.softslots` gespeichert.
 
 ## Vita-Menü
 
-- **Anzeige:** Bildstil (Weich / Scharf / Pixelgenau), Breitbild, Weitsicht (400×240, experimentell),
-  GBA-Farbkorrektur, Lautstärke, FPS-Anzeige, Rand-Symbole
+- **Anzeige:** Bildstil (Weich / Scharf / Pixelgenau), Breitbild, Weitsicht (bis 400×240),
+  Bildrate 30 (konstant), GBA-Farbkorrektur, Lautstärke, FPS-Anzeige, Rand-Symbole
 - **Steuerung:** Rückseiten-Touch, Turbo-Faktor, Text vorspulen, Auto-Speichern und alle
   „Minish Cap Reborn“-Komfortfunktionen (Pegasusstiefel auf L+R, Okarina auf L+Select,
   360°-Bewegung, Muscheln bis 9999, Heldenmodus …)
@@ -91,6 +91,17 @@ ROM=/pfad/rom.gba tools/difftest.sh walk 900 skript.txt TMC_AUDIO_SYNC=1 TMC_DUM
 Wichtig: Der Host-Compiler ist nachsichtiger als die Vita-Toolchain (GCC 15). Vor
 jeder Version deshalb immer auch `make TARGET=vita` bauen.
 
+### Renderer-Messungen
+
+`TMC_OLD3DS_PROFILE=1` wählt auf dem Host dasselbe Renderer-Profil wie die Vita
+(schnelle exakte Pfade, kleine Tabellen). `TMC_PPU_TIMING=<frame>` misst ab diesem
+Frame die Renderzeit (mit `TMC_NOTHREADS=1`) und schreibt `[ppustat]` ins Log; mit
+`valgrind --tool=callgrind --toggle-collect=TmcHost_TimedRender` lässt sich genau
+dieser Teil profilieren. Die Renderer-Dateien (`port/ppu/src`) werden mit `-O3`
+übersetzt (`PPU_OPT`); auf ARM nutzen einige Schleifen NEON, der Host die
+gleichwertige C-Fassung. Jede Änderung am Renderer muss Bild für Bild identische
+Ausgabe liefern (Host gegen alte Version, `armhost` unter qemu gegen Host).
+
 ## Eigene LiveArea-Bilder
 
 Bilder für Icon, LiveArea-Hintergrund und Startkachel kommen aus `sce_sys_local/`
@@ -110,9 +121,10 @@ bitte beide Dateien mitschicken.
 - **Weitsicht:** zeigt den ganzen Raum, höchstens 400×240, überall mit demselben Zoom.
   Räume kleiner als 400×240 (Häuser, viele Dungeon-Räume) erscheinen mit schwarzem Rand.
   Beim Scrollen in einen anderen Raum ist kurz nur der normale Ausschnitt (266×160) zu
-  sehen, ebenfalls ohne Zoomsprung. Die Weitsicht braucht deutlich mehr Rechenzeit
-  (Hyrule-Steppe ~40 FPS) – dafür gibt es **„Bildrate 30 (konstant)“**: jedes zweite Bild
-  wird gezeichnet, das Spiel läuft weiter in normalem Tempo.
+  sehen, ebenfalls ohne Zoomsprung.
+- **Bildrate:** Das Spieltempo bleibt immer gleich. Braucht ein Bild länger als 1/60 s,
+  wird das nächste nur berechnet, aber nicht gezeichnet (im Log `catchup=`), statt das
+  Spiel zu verlangsamen. Wer lieber gleichmäßige 30 FPS hat: **„Bildrate 30 (konstant)“**.
 - Teleport-Cheat nach Hyrule-Stadt während des Prologs ergibt einen weißen Bildschirm
   (auch in den anderen Ports so).
 - Der Build nutzt die USA-Basis mit Laufzeit-Erkennung der EU-ROM (wie der 3DS-Port).

@@ -14,7 +14,9 @@ and runs as native ARM code on the Vita.
 
 ## Features
 
-- Native port at 60 fps; the software renderer uses all three application cores.
+- Native port at 60 fps; the software renderer uses all three application cores
+  (NEON where it helps). The game speed never drops: a frame that takes too long is
+  skipped instead of slowing the game down.
 - Widescreen at the original pixel aspect ratio, plus Full View: the whole room up to
   400×240 at one constant zoom level, with an optional steady 30 fps mode.
 - Display styles: Smooth, Sharp (crisp pixels without shimmer) and Pixel Perfect.

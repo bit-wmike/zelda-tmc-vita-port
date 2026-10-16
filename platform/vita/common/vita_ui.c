@@ -77,6 +77,13 @@ static int sWarpChoice;
 static uint32_t sPrevHeld;
 static uint32_t sOverlay[544 * 960];
 static uint32_t sOverlayTick;
+/* The overlay is a full 960x544 software paint (~25 ms on the Vita). It is
+ * repainted at once after any input and otherwise every third frame (its
+ * small animations); the frames in between show the cached picture, so the
+ * screen keeps 60 FPS. The game frame below it is not rendered at all. */
+static unsigned sOverlayAge = 99;
+static bool sOverlayRepainted;
+static bool sOverlayForce = true;
 
 /* touch tracking */
 static bool sTouchWasActive;
@@ -263,8 +270,8 @@ static const MenuItem kDisplayItems[] = {
     TOGGLE("Breitbild", "Mehr Spielwelt links und rechts sichtbar (Originalverh\xc3\xa4ltnis).", Wide),
     TOGGLE("Weitsicht", "Zeigt bis zu 400x240 (ganze R\xc3\xa4ume) mit immer gleichem Zoom; kleine R\xc3\xa4ume mit Rand.",
            FullView),
-    TOGGLE("Bildrate 30 (konstant)", "Zeichnet jedes zweite Bild: gleichm\xc3\xa4\xc3\x9f" "ige 30 FPS bei normalem Spieltempo. "
-           "Empfohlen mit Weitsicht.", HalfRate),
+    TOGGLE("Bildrate 30 (konstant)", "Zeichnet jedes zweite Bild: gleichm\xc3\xa4\xc3\x9f" "ige 30 FPS. Das Spieltempo "
+           "bleibt in beiden Modi immer gleich.", HalfRate),
     TOGGLE("GBA-Farbkorrektur", "Farben wie auf dem GBA-Bildschirm (etwas blasser).", Color),
     { IT_SLIDER, "Lautst\xc3\xa4rke", NULL, GetVolume, SetVolume, NULL, NULL, 0, 100, 10, false },
     TOGGLE("FPS anzeigen", NULL, Fps),
@@ -520,6 +527,7 @@ void TmcVita_OnInputPolled(const TmcInputState* input, uint32_t down) {
         return;
     }
 
+    const bool touchEvent = input->touchActive || sTouchWasActive; /* incl. the release frame */
     HandleTouch(input);
 
     if (sMode == UI_NONE) {
@@ -531,6 +539,7 @@ void TmcVita_OnInputPolled(const TmcInputState* input, uint32_t down) {
     } else if (sMode == UI_MENU) {
         MenuInput(down, held);
     } else if (sMode == UI_OVERLAY) {
+        if (down || touchEvent) sOverlayForce = true;
         if (down & (TMC_KEY_B | TMC_KEY_OVERLAY | TMC_KEY_START)) CloseUi();
         else if (down & TMC_KEY_MENU) OpenMenu();
         else if (!InGame()) CloseUi();
@@ -575,12 +584,25 @@ void TmcVita_BeforePresent(uint32_t* pixels, int* width, int* height, int pitch)
     (void)width;
     (void)height;
     (void)pitch;
+    sOverlayRepainted = false;
     if (sMode == UI_OVERLAY) {
-        SecondScreenSnapshot snap;
-        Port_SecondScreenState_Read(&snap);
-        Port_SecondScreen_PaintInto(sOverlay, 960, 544, 960, &snap, ++sOverlayTick);
+        if (sOverlayForce || sOverlayAge >= 2) {
+            SecondScreenSnapshot snap;
+            Port_SecondScreenState_Read(&snap);
+            Port_SecondScreen_PaintInto(sOverlay, 960, 544, 960, &snap, ++sOverlayTick);
+            sOverlayAge = 0;
+            sOverlayForce = false;
+            sOverlayRepainted = true;
+        } else {
+            ++sOverlayAge;
+        }
+    } else {
+        sOverlayForce = true; /* first overlay frame always paints */
     }
 }
+
+/* The opaque overlay hides the game picture completely. */
+bool TmcVita_OverlayCoversGame(void) { return sMode == UI_OVERLAY; }
 
 /* ======================================================================
  * Drawing (inside the video backend's scene)
@@ -683,7 +705,7 @@ static void DrawSideIcons(void) {
 
 void TmcVita_DrawUi(void) {
     if (sMode == UI_OVERLAY) {
-        TmcGfx_DrawPixels(sOverlay, 960, 544, 960, 0, 0, 1.0f, false, 255);
+        TmcGfx_DrawPixelsCached(sOverlay, 960, 544, 960, 0, 0, 1.0f, false, 255, sOverlayRepainted);
         TmcGfx_Text(12, 6, 0.8f, 0x303030FF, "Kreis: zur\xc3\xbc" "ck");
     } else if (sMode == UI_NONE) {
         DrawSideIcons();

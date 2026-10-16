@@ -123,6 +123,13 @@ $(BUILD)/%.c.o: $(ROOT)/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -c $< -o $@
 
+# The software renderer is the hot path of every frame: optimised harder,
+# like the 3DS port does for the same files.
+PPU_OPT ?= -O3
+$(BUILD)/port/ppu/src/%.c.o: $(ROOT)/port/ppu/src/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) $(PPU_OPT) -c $< -o $@
+
 $(BUILD)/libs/agbplay_core/%.cpp.o: $(ROOT)/libs/agbplay_core/%.cpp
 	@mkdir -p $(dir $@)
 	@$(CXX) $(CXXFLAGS) $(FASTMATH) -c $< -o $@
@@ -152,7 +159,7 @@ $(OUT): $(OBJ)
 $(OBJ): $(BUILD)/flags.stamp
 $(BUILD)/flags.stamp: FORCE
 	@mkdir -p $(BUILD)
-	@echo '$(CFLAGS) $(CXXFLAGS)' | cmp -s - $@ || echo '$(CFLAGS) $(CXXFLAGS)' > $@
+	@echo '$(CFLAGS) $(CXXFLAGS) $(PPU_OPT)' | cmp -s - $@ || echo '$(CFLAGS) $(CXXFLAGS) $(PPU_OPT)' > $@
 FORCE:
 
 TITLE_ID := TMCV00001

@@ -17,6 +17,7 @@
 #include <psp2/kernel/threadmgr.h>
 #include <vita2d.h>
 
+#include <arm_neon.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -52,14 +53,20 @@ bool TmcVitaVideo_Init(void) {
     return true;
 }
 
+/* Copies one row and forces opaque alpha, four pixels at a time. */
+static inline void CopyRowOpaque(uint32_t* dst, const uint32_t* src, int width) {
+    const uint32x4_t opaque = vdupq_n_u32(0xFF000000u);
+    int x = 0;
+    for (; x + 4 <= width; x += 4) vst1q_u32(dst + x, vorrq_u32(vld1q_u32(src + x), opaque));
+    for (; x < width; ++x) dst[x] = src[x] | 0xFF000000u;
+}
+
 static void Upload(vita2d_texture* tex, const uint32_t* pixels, int width, int height, int pitch) {
     uint8_t* dst = (uint8_t*)vita2d_texture_get_datap(tex);
     const unsigned stride = vita2d_texture_get_stride(tex);
     for (int y = 0; y < height; ++y) {
-        uint32_t* row = (uint32_t*)(dst + (size_t)y * stride);
-        const uint32_t* src = pixels + (size_t)y * pitch;
         /* Force opaque alpha: the PPU leaves A undefined. */
-        for (int x = 0; x < width; ++x) row[x] = src[x] | 0xFF000000u;
+        CopyRowOpaque((uint32_t*)(dst + (size_t)y * stride), pixels + (size_t)y * pitch, width);
     }
 }
 
@@ -167,7 +174,13 @@ static int sPanelW, sPanelH;
 
 void TmcGfx_DrawPixels(const uint32_t* pixels, int width, int height, int pitch, int x, int y, float scale,
                        bool smooth, uint8_t alpha) {
+    TmcGfx_DrawPixelsCached(pixels, width, height, pitch, x, y, scale, smooth, alpha, true);
+}
+
+void TmcGfx_DrawPixelsCached(const uint32_t* pixels, int width, int height, int pitch, int x, int y, float scale,
+                             bool smooth, uint8_t alpha, bool changed) {
     if (!sPanelTex || sPanelW != width || sPanelH != height) {
+        changed = true;
         if (sPanelTex) {
             vita2d_wait_rendering_done();
             vita2d_free_texture(sPanelTex);
@@ -177,12 +190,11 @@ void TmcGfx_DrawPixels(const uint32_t* pixels, int width, int height, int pitch,
         sPanelH = height;
         if (!sPanelTex) return;
     }
-    uint8_t* dst = (uint8_t*)vita2d_texture_get_datap(sPanelTex);
-    const unsigned stride = vita2d_texture_get_stride(sPanelTex);
-    for (int row = 0; row < height; ++row) {
-        uint32_t* d = (uint32_t*)(dst + (size_t)row * stride);
-        const uint32_t* src = pixels + (size_t)row * pitch;
-        for (int x = 0; x < width; ++x) d[x] = src[x] | 0xFF000000u;
+    if (changed) {
+        uint8_t* dst = (uint8_t*)vita2d_texture_get_datap(sPanelTex);
+        const unsigned stride = vita2d_texture_get_stride(sPanelTex);
+        for (int row = 0; row < height; ++row)
+            CopyRowOpaque((uint32_t*)(dst + (size_t)row * stride), pixels + (size_t)row * pitch, width);
     }
     const SceGxmTextureFilter f = smooth ? SCE_GXM_TEXTURE_FILTER_LINEAR : SCE_GXM_TEXTURE_FILTER_POINT;
     vita2d_texture_set_filters(sPanelTex, f, f);

@@ -111,6 +111,11 @@ void TmcDiag_FrameDone(void) {
             n += snprintf(line + n, sizeof(line) - n, " %s=%.2f/%.2fms", kStageNames[i],
                           (double)s->sum / s->count / 1000.0, s->max / 1000.0);
     }
+    {
+        extern uint32_t TmcVita_TakeCatchUpSkips(void);
+        const uint32_t skips = TmcVita_TakeCatchUpSkips();
+        if (skips && n < (int)sizeof(line)) n += snprintf(line + n, sizeof(line) - n, " catchup=%u", skips);
+    }
     if (sAudioBuffers && n < (int)sizeof(line))
         n += snprintf(line + n, sizeof(line) - n, " audio=%.2f/%.2fms underruns=%u",
                       (double)sAudioRenderSumUs / sAudioBuffers / 1000.0, sAudioRenderMaxUs / 1000.0,

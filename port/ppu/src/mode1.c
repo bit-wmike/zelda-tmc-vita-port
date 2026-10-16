@@ -22,6 +22,11 @@
 
 #include "virtuappu.h"
 
+#if defined(__ARM_NEON) && defined(TMC_VITA) && !defined(MODE1_NO_NEON)
+#include <arm_neon.h>
+#define MODE1_NEON 1
+#endif
+
 virtuappu_mode1_pre_line_fn virtuappu_mode1_pre_line_callback = NULL;
 
 typedef struct Mode1TilemapEntry {
@@ -496,6 +501,35 @@ VPPU_TLS uint8_t virtuappu_mode1_obj_semitrans[MODE1_GBA_WIDTH];
  * with obj_semitrans. */
 VPPU_TLS uint8_t virtuappu_mode1_obj_window[MODE1_GBA_WIDTH];
 
+/* Alpha blend as a 32x32 table of 5-bit results for the current EVA/EVB.
+ * Same arithmetic as mode1_alpha_blend (5-bit channels from the 8-bit LUT
+ * colour >> 3, truncating >> 4, clamp 31), one load per channel instead.
+ * Per thread, rebuilt only when EVA/EVB change. */
+static VPPU_TLS uint8_t mode1_blend_lut_tls[32 * 32];
+static VPPU_TLS int mode1_blend_lut_key_tls = -1;
+
+static const uint8_t* mode1_prepare_blend_lut(int eva, int evb) {
+    const int key = eva | (evb << 8);
+    uint8_t* lut = mode1_blend_lut_tls;
+    if (mode1_blend_lut_key_tls != key) {
+        for (int top = 0; top < 32; ++top) {
+            for (int bottom = 0; bottom < 32; ++bottom) {
+                int v = (top * eva + bottom * evb) >> 4;
+                lut[top * 32 + bottom] = (uint8_t)(v > 31 ? 31 : v);
+            }
+        }
+        mode1_blend_lut_key_tls = key;
+    }
+    return lut;
+}
+
+static inline uint32_t mode1_alpha_blend_lut(const uint8_t* lut, uint32_t top_abgr, uint32_t bottom_abgr) {
+    const uint32_t r = lut[((top_abgr & 0xF8u) << 2u) | ((bottom_abgr & 0xF8u) >> 3u)];
+    const uint32_t g = lut[((top_abgr >> 6u) & 0x3E0u) | ((bottom_abgr >> 11u) & 0x1Fu)];
+    const uint32_t b = lut[((top_abgr >> 14u) & 0x3E0u) | ((bottom_abgr >> 19u) & 0x1Fu)];
+    return 0xFF000000u | (b << 19u) | (g << 11u) | (r << 3u);
+}
+
 /* Per-pixel vertical OBJ clip (PC port "swamp sink"): the port marks which OAM
  * entries to clip (one byte per OAM index) and a waterline scanline; a marked
  * entry's pixels at line >= waterline are dropped, leaving everything else
@@ -543,6 +577,8 @@ uint32_t virtuappu_mode1_io_read32(uint16_t offset) {
  * scanline render; SHARED read-only during it (same contract as ws_shadow).
  * Byte-exact: LUT[i] == rgb555_to_abgr(palette[i]) by construction. */
 static uint32_t mode1_bg_abgr_lut[MODE1_PALETTE_COLORS];
+/* Token-indexed copy: [0] = backdrop (palette 0), [t] = mode1_bg_abgr_lut[t - 1]. */
+static uint32_t mode1_bg_abgr_lut1[MODE1_PALETTE_COLORS + 1];
 static uint32_t mode1_obj_abgr_lut[MODE1_PALETTE_COLORS];
 static uint64_t mode1_bg_4bpp_pair_lut[16][256];
 static uint32_t mode1_bg_pair_palette_cache[MODE1_PALETTE_COLORS];
@@ -580,7 +616,27 @@ void virtuappu_mode1_set_color_correction(bool enabled) {
 /* Convert the current BG + OBJ palette RAM into the ABGR8888 LUTs. Call once
  * per frame after the palette is final (post pre-line callback) and before the
  * parallel scanline render. */
+/* Per 4bpp palette bank: bit i set when colour i is the port's magenta
+ * "transparent in the shadow map" key (0x7C1F). Lets the shadow-backed
+ * (Full View / wide) tile rows use the same pair-at-a-time token path as
+ * native VRAM rows; the per-pixel loop it replaces skipped exactly these. */
+static uint16_t mode1_bg_magenta_mask[16];
+#ifdef MODE1_NEON
+/* The same masks as byte tables (0xFF = magenta) for vtbl lookups. */
+static uint8_t mode1_bg_magenta_tab[16][16];
+#endif
+
 static void virtuappu_mode1_publish_palette_luts(void) {
+    for (unsigned bank = 0; bank < 16u; ++bank) {
+        uint16_t mask = 0u;
+        for (unsigned i = 1; i < 16u; ++i) {
+            if ((mode1_memory.bg_palette[bank * 16u + i] & 0x7FFFu) == 0x7C1Fu) mask |= (uint16_t)(1u << i);
+        }
+        mode1_bg_magenta_mask[bank] = mask;
+#ifdef MODE1_NEON
+        for (unsigned i = 0; i < 16u; ++i) mode1_bg_magenta_tab[bank][i] = ((mask >> i) & 1u) ? 0xFFu : 0u;
+#endif
+    }
     const bool correction_changed =
         !mode1_palette_source_initialized || mode1_palette_source_color_correction != mode1_color_correction;
     const bool bg_changed = correction_changed || memcmp(mode1_bg_palette_source_cache, mode1_memory.bg_palette,
@@ -592,6 +648,8 @@ static void virtuappu_mode1_publish_palette_luts(void) {
         for (int i = 0; i < MODE1_PALETTE_COLORS; ++i) {
             mode1_bg_abgr_lut[i] = virtuappu_mode1_rgb555_to_abgr8888(mode1_memory.bg_palette[i]);
         }
+        mode1_bg_abgr_lut1[0] = mode1_bg_abgr_lut[0];
+        memcpy(&mode1_bg_abgr_lut1[1], mode1_bg_abgr_lut, sizeof(mode1_bg_abgr_lut));
         memcpy(mode1_bg_palette_source_cache, mode1_memory.bg_palette, sizeof(mode1_bg_palette_source_cache));
     }
     if (obj_changed) {
@@ -764,10 +822,15 @@ static inline int mode1_shadow_index_for_x(int sample_x, int scroll_x, int tile_
     return (sample_x + (scroll_x & 7)) >> 3;
 }
 
-static void mode1_render_text_bg_native_4bpp(int bg_index, uint32_t char_base, uint32_t screen_base,
-                                             int map_width_tiles, int tile_row, int pixel_y, int scroll_x,
-                                             int render_width, uint8_t priority, uint32_t* line_buffer,
-                                             uint8_t* priority_buffer) {
+/* ABGR variant of the tile renderer: writes only opaque pixels (callers
+ * paint layers on top of each other). Destination pixels [dst_begin,
+ * dst_end) sample map column (x - dst_offset); the shadow/clip decisions use
+ * the destination x, as in the per-pixel loop of
+ * virtuappu_mode1_render_text_bg_line. */
+static void mode1_render_text_bg_native_4bpp_range(int bg_index, uint32_t char_base, uint32_t screen_base,
+                                                   int map_width_tiles, int tile_row, int pixel_y, int scroll_x,
+                                                   int dst_begin, int dst_end, int dst_offset, uint8_t priority,
+                                                   uint32_t* line_buffer, uint8_t* priority_buffer) {
     const int map_pixel_mask = map_width_tiles * 8 - 1;
     const int screen_block_y = tile_row >> 5;
     const int local_row = tile_row & 31;
@@ -776,14 +839,16 @@ static void mode1_render_text_bg_native_4bpp(int bg_index, uint32_t char_base, u
     int shadow_stride = 0;
     const bool shadow_active = virtuappu_mode1_ws_shadow[bg_index] != NULL &&
                                mode1_shadow_geometry_for_bg(bg_index, &shadow_cols, &shadow_stride);
+    const int sample_end = dst_end - dst_offset;
 
-    for (int x = 0; x < render_width;) {
-        const int src_x = (x + scroll_x) & map_pixel_mask;
+    for (int sx = dst_begin - dst_offset; sx < sample_end;) {
+        const int x = sx + dst_offset; /* destination column */
+        const int src_x = (sx + scroll_x) & map_pixel_mask;
         const int tile_col = src_x >> 3;
         const int first_tile_pixel = src_x & 7;
         int run = 8 - first_tile_pixel;
-        if (run > render_width - x)
-            run = render_width - x;
+        if (run > sample_end - sx)
+            run = sample_end - sx;
         /* The native VRAM screenblock and the port shadow can split one source
          * tile fragment when BGHOFS is not tile-aligned. Start a fresh fragment
          * exactly at x=240 so its map entry comes from the correct provider. */
@@ -801,7 +866,7 @@ static void mode1_render_text_bg_native_4bpp(int bg_index, uint32_t char_base, u
                                 shadow_active;
         if (use_shadow) {
             const int shadow_index = mode1_shadow_index_for_x(
-                x, scroll_x, tile_col, virtuappu_mode1_ws_shadow_base_tile[bg_index]);
+                sx, scroll_x, tile_col, virtuappu_mode1_ws_shadow_base_tile[bg_index]);
             entry.raw = shadow_index >= 0 && shadow_index < shadow_cols
                             ? virtuappu_mode1_ws_shadow[bg_index][(size_t)local_row * (size_t)shadow_stride +
                                                                  (size_t)shadow_index]
@@ -817,19 +882,29 @@ static void mode1_render_text_bg_native_4bpp(int bg_index, uint32_t char_base, u
         if (row_base + 3u < MODE1_VRAM_SIZE) {
             const uint32_t packed_row = mode1_read_tile_row_4bpp(mode1_memory.vram + row_base);
             if (packed_row == 0u) {
-                x += run;
+                sx += run;
                 continue;
             }
             const size_t palette_base = (size_t)mode1_tile_palette(entry) * 16u;
             const bool hflip = mode1_tile_hflip(entry);
-            if (!use_shadow && run == 8 && x + run <= MODE1_GBA_BG_CLIP_X) {
+            if (run == 8) {
+                /* Whole tile, two pixels per lookup; shadow rows drop the
+                 * magenta key colours (they stay transparent). */
                 const unsigned palette_bank = (unsigned)(palette_base >> 4u);
+                const unsigned magenta = use_shadow ? mode1_bg_magenta_mask[palette_bank] : 0u;
                 const uint16_t packed_priority = (uint16_t)priority | ((uint16_t)priority << 8u);
                 for (int pair_index = 0; pair_index < 4; ++pair_index) {
                     const int byte_index = hflip ? 3 - pair_index : pair_index;
                     uint8_t packed_pair = (uint8_t)(packed_row >> (byte_index * 8));
                     if (hflip)
                         packed_pair = (uint8_t)((packed_pair << 4u) | (packed_pair >> 4u));
+                    if (magenta != 0u) {
+                        unsigned lo = packed_pair & 0x0Fu;
+                        unsigned hi = packed_pair >> 4u;
+                        if ((magenta >> lo) & 1u) lo = 0u;
+                        if ((magenta >> hi) & 1u) hi = 0u;
+                        packed_pair = (uint8_t)(lo | (hi << 4u));
+                    }
                     if (packed_pair == 0u)
                         continue;
 
@@ -850,7 +925,7 @@ static void mode1_render_text_bg_native_4bpp(int bg_index, uint32_t char_base, u
                             priority_buffer[x + pair_index * 2 + 1] = priority;
                     }
                 }
-                x += run;
+                sx += run;
                 continue;
             }
             for (int i = 0; i < run; ++i) {
@@ -867,8 +942,16 @@ static void mode1_render_text_bg_native_4bpp(int bg_index, uint32_t char_base, u
                     priority_buffer[x + i] = priority;
             }
         }
-        x += run;
+        sx += run;
     }
+}
+
+static void mode1_render_text_bg_native_4bpp(int bg_index, uint32_t char_base, uint32_t screen_base,
+                                             int map_width_tiles, int tile_row, int pixel_y, int scroll_x,
+                                             int render_width, uint8_t priority, uint32_t* line_buffer,
+                                             uint8_t* priority_buffer) {
+    mode1_render_text_bg_native_4bpp_range(bg_index, char_base, screen_base, map_width_tiles, tile_row, pixel_y,
+                                           scroll_x, 0, render_width, 0, priority, line_buffer, priority_buffer);
 }
 
 /* The common Old-3DS gameplay path only needs a palette identity while BG
@@ -907,8 +990,40 @@ static uint32_t mode1_bg_token_pair(unsigned palette_bank, uint8_t packed_pair) 
     return (uint32_t)lo_token | ((uint32_t)hi_token << 16u);
 }
 
-static void mode1_render_text_bg_native_tokens(int bg_index, int line, uint16_t bgcnt, int render_width,
-                                               uint16_t* tokens) {
+#ifdef MODE1_NEON
+/* One whole 4bpp tile row -> 8 palette tokens (0 = transparent), NEON.
+ * Pixel i is nibble i of the row (nibble 7-i when h-flipped); magenta key
+ * colours of shadow rows count as transparent. Writes all 8 tokens; the
+ * caller's token line is zero-initialised, so writing the zeros is the
+ * same as skipping them. */
+static inline void mode1_tile_tokens8_neon(uint16_t* dst, uint32_t packed_row, bool hflip, unsigned bank,
+                                           unsigned magenta) {
+    const uint8x8_t bytes = vreinterpret_u8_u32(vdup_n_u32(packed_row));
+    const uint8x8_t lo = vand_u8(bytes, vdup_n_u8(0x0Fu));
+    const uint8x8_t hi = vshr_n_u8(bytes, 4);
+    uint8x8_t px = vzip_u8(lo, hi).val[0];
+    if (hflip) px = vrev64_u8(px);
+    if (magenta != 0u) {
+        uint8x8x2_t tab;
+        tab.val[0] = vld1_u8(&mode1_bg_magenta_tab[bank][0]);
+        tab.val[1] = vld1_u8(&mode1_bg_magenta_tab[bank][8]);
+        px = vbic_u8(px, vtbl2_u8(tab, px));
+    }
+    const uint16x8_t w = vmovl_u8(px);
+    const uint16x8_t nz = vtstq_u16(w, w);
+    const uint16x8_t tok = vandq_u16(vaddq_u16(w, vdupq_n_u16((uint16_t)(bank * 16u + 1u))), nz);
+    vst1q_u16(dst, tok);
+}
+#endif
+
+/* Renders destination pixels [dst_begin, dst_end) of one text BG line as
+ * palette tokens, sampling map column (x - dst_offset). dst_offset is 0 for
+ * the ordinary case; the wide HUD uses it to move the native right-hand HUD
+ * columns to the far right edge. The shadow/clip decisions use the
+ * destination x, the map lookup uses the sample x - exactly like the
+ * per-pixel loop in mode1_render_text_bg_compact_tokens. */
+static void mode1_render_text_bg_native_tokens_range(int bg_index, int line, uint16_t bgcnt, int dst_begin,
+                                                     int dst_end, int dst_offset, uint16_t* tokens) {
     const uint32_t char_base = (uint32_t)((bgcnt >> 2u) & 3u) * 0x4000u;
     const uint32_t screen_base = (uint32_t)((bgcnt >> 8u) & 0x1Fu) * 0x800u;
     const uint16_t size_flag = (uint16_t)((bgcnt >> 14u) & 3u);
@@ -927,13 +1042,15 @@ static void mode1_render_text_bg_native_tokens(int bg_index, int line, uint16_t 
     int shadow_stride = 0;
     const bool shadow_active = virtuappu_mode1_ws_shadow[bg_index] != NULL &&
                                mode1_shadow_geometry_for_bg(bg_index, &shadow_cols, &shadow_stride);
+    const int sample_end = dst_end - dst_offset;
 
-    for (int x = 0; x < render_width;) {
-        const int src_x = (x + scroll_x) & map_pixel_mask;
+    for (int sx = dst_begin - dst_offset; sx < sample_end;) {
+        const int x = sx + dst_offset; /* destination column */
+        const int src_x = (sx + scroll_x) & map_pixel_mask;
         const int tile_col = src_x >> 3;
         const int first_tile_pixel = src_x & 7;
         int run = 8 - first_tile_pixel;
-        if (run > render_width - x) run = render_width - x;
+        if (run > sample_end - sx) run = sample_end - sx;
         if (!mode1_shadow_covers_full_view() && x < MODE1_GBA_BG_CLIP_X &&
             x + run > MODE1_GBA_BG_CLIP_X) {
             run = MODE1_GBA_BG_CLIP_X - x;
@@ -950,7 +1067,7 @@ static void mode1_render_text_bg_native_tokens(int bg_index, int line, uint16_t 
                                 shadow_active;
         if (use_shadow) {
             const int shadow_index = mode1_shadow_index_for_x(
-                x, scroll_x, tile_col, virtuappu_mode1_ws_shadow_base_tile[bg_index]);
+                sx, scroll_x, tile_col, virtuappu_mode1_ws_shadow_base_tile[bg_index]);
             entry.raw = shadow_index >= 0 && shadow_index < shadow_cols
                             ? virtuappu_mode1_ws_shadow[bg_index][(size_t)local_row * (size_t)shadow_stride +
                                                                  (size_t)shadow_index]
@@ -964,24 +1081,39 @@ static void mode1_render_text_bg_native_tokens(int bg_index, int line, uint16_t 
         if (row_base + 3u < MODE1_VRAM_SIZE) {
             const uint32_t packed_row = mode1_read_tile_row_4bpp(mode1_memory.vram + row_base);
             if (packed_row == 0u) {
-                x += run;
+                sx += run;
                 continue;
             }
 
             const unsigned palette_bank = mode1_tile_palette(entry);
             const bool hflip = mode1_tile_hflip(entry);
-            if (!use_shadow && run == 8 && x + run <= MODE1_GBA_BG_CLIP_X) {
+            if (run == 8) {
+                /* Whole tile: two pixels per lookup. Shadow rows drop the
+                 * magenta key colours first (they stay transparent). */
+                const unsigned magenta = use_shadow ? mode1_bg_magenta_mask[palette_bank] : 0u;
+#ifdef MODE1_NEON
+                mode1_tile_tokens8_neon(&tokens[x], packed_row, hflip, palette_bank, magenta);
+                sx += run;
+                continue;
+#endif
                 for (int pair_index = 0; pair_index < 4; ++pair_index) {
                     const int byte_index = hflip ? 3 - pair_index : pair_index;
                     uint8_t packed_pair = (uint8_t)(packed_row >> (byte_index * 8));
                     if (hflip)
                         packed_pair = (uint8_t)((packed_pair << 4u) | (packed_pair >> 4u));
+                    if (magenta != 0u) {
+                        unsigned lo = packed_pair & 0x0Fu;
+                        unsigned hi = packed_pair >> 4u;
+                        if ((magenta >> lo) & 1u) lo = 0u;
+                        if ((magenta >> hi) & 1u) hi = 0u;
+                        packed_pair = (uint8_t)(lo | (hi << 4u));
+                    }
                     if (packed_pair != 0u) {
                         mode1_store_bg_token_pair(&tokens[x + pair_index * 2],
                                                   mode1_bg_token_pair(palette_bank, packed_pair));
                     }
                 }
-                x += run;
+                sx += run;
                 continue;
             }
 
@@ -999,8 +1131,13 @@ static void mode1_render_text_bg_native_tokens(int bg_index, int line, uint16_t 
                 }
             }
         }
-        x += run;
+        sx += run;
     }
+}
+
+static void mode1_render_text_bg_native_tokens(int bg_index, int line, uint16_t bgcnt, int render_width,
+                                               uint16_t* tokens) {
+    mode1_render_text_bg_native_tokens_range(bg_index, line, bgcnt, 0, render_width, 0, tokens);
 }
 
 static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t bgcnt, int frame_width,
@@ -1044,6 +1181,20 @@ static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t
     if (render_width > frame_width) render_width = frame_width;
     if (native_bounds && (line < native_top || line >= native_bottom)) return;
 
+    if (hud_right_anchor && !message_line && !message_dst_line && !native_bounds) {
+        /* Wide HUD line: native columns [0, HUD_X) in place, columns
+         * [HUD_X, 240) moved to the right edge, nothing in between. */
+        const int hud_dst = frame_width - (MODE1_GBA_BG_CLIP_X - MODE1_WS_HUD_RIGHT_NATIVE_X);
+        mode1_render_text_bg_native_tokens_range(bg_index, line, bgcnt, 0,
+                                                 MODE1_WS_HUD_RIGHT_NATIVE_X < render_width
+                                                     ? MODE1_WS_HUD_RIGHT_NATIVE_X
+                                                     : render_width,
+                                                 0, tokens);
+        if (hud_dst < render_width)
+            mode1_render_text_bg_native_tokens_range(bg_index, line, bgcnt, hud_dst, render_width,
+                                                     frame_width - MODE1_GBA_BG_CLIP_X, tokens);
+        return;
+    }
     if (!hud_right_anchor && !message_line && !message_dst_line) {
         if (native_bounds) {
             const int native_width = native_right - native_left;
@@ -1153,6 +1304,14 @@ next_pass:
     }
 }
 
+/* x / d for the mosaic block size d (1..16). For 0 <= x < 1024 the
+ * rounded-up 16-bit reciprocal gives the exact quotient (checked for every
+ * x and d); anything else uses the plain division. */
+static inline int mode1_mosaic_div(int x, int d, uint32_t recip) {
+    if ((unsigned)x < 1024u) return (int)(((uint32_t)x * recip) >> 16u);
+    return x / d;
+}
+
 void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_buffer, uint8_t* priority_buffer) {
     uint16_t bgcnt = virtuappu_mode1_io_read16((uint16_t)(MODE1_IO_BG0CNT + bg_index * 2));
     uint8_t priority = (uint8_t)(bgcnt & 3u);
@@ -1247,6 +1406,24 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
                                         scroll_x, render_max_x, priority, line_buffer, priority_buffer);
         return;
     }
+    if (MODE1_NATIVE_FAST_PATHS_ENABLED() && !bpp8 &&
+        (!mosaic_on || (mode1_old3ds_profile && mosaic_h == 1 && mosaic_v == 1)) &&
+        ws_hud_right_anchor && !ws_msg_line && !ws_msg_dst_line && render_min_x == 0) {
+        /* Wide HUD line: native columns [0, HUD_X) in place, columns
+         * [HUD_X, 240) moved to the right edge, nothing in between. */
+        mode1_render_text_bg_native_4bpp_range(bg_index, char_base, screen_base, map_width_tiles, tile_row, pixel_y,
+                                               scroll_x, 0,
+                                               MODE1_WS_HUD_RIGHT_NATIVE_X < render_max_x
+                                                   ? MODE1_WS_HUD_RIGHT_NATIVE_X
+                                                   : render_max_x,
+                                               0, priority, line_buffer, priority_buffer);
+        if (ws_hud_right_dst_x < render_max_x)
+            mode1_render_text_bg_native_4bpp_range(bg_index, char_base, screen_base, map_width_tiles, tile_row,
+                                                   pixel_y, scroll_x, ws_hud_right_dst_x, render_max_x,
+                                                   frame_width - MODE1_GBA_BG_CLIP_X, priority, line_buffer,
+                                                   priority_buffer);
+        return;
+    }
 
     /* N64 perf: the tilemap screen-entry read + its address math are constant
      * across a tile's 8 px; cache them and recompute only when the tile cell
@@ -1266,13 +1443,17 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
     uint32_t bg_row_base = 0u;
     size_t bg_pal_bank = 0u;
 
+    /* x / mosaic_h without a library division per pixel (see mode1_mosaic_div). */
+    const uint32_t mosaic_h_recip = (65536u + (uint32_t)mosaic_h - 1u) / (uint32_t)mosaic_h;
+    (void)mosaic_h_recip;
+
     /* The per-pixel body is identical for the fast (native / no-remap) and the
      * widescreen-remap paths; keep it in one macro so the two loops can never
      * drift. `_sx` is the tilemap SAMPLE column; the loop var `x` is always the
      * destination column (and drives the x>=240 shadow/sentinel guards). */
 #define MODE1_BG_PIXEL(_sx)                                                                                            \
     do {                                                                                                               \
-        int eff_x = (mosaic_h == 1) ? (_sx) : ((_sx) / mosaic_h) * mosaic_h;                                           \
+        int eff_x = (mosaic_h == 1) ? (_sx) : mode1_mosaic_div((_sx), mosaic_h, mosaic_h_recip) * mosaic_h;            \
         int src_x = (eff_x + scroll_x) & (map_width_tiles * 8 - 1);                                                    \
         int tile_col = src_x / 8;                                                                                      \
         int pixel_x = src_x % 8;                                                                                       \
@@ -2425,6 +2606,264 @@ static bool mode1_render_old3ds_title_alpha_line(int line, uint16_t dispcnt, int
  * feature and is also the parity-test oracle. OBJ rendering is deliberately
  * shared with the generic path so affine/8bpp/mosaic sprites, OAM tie-breaking,
  * swamp clipping, and semi-transparency retain one implementation. */
+typedef struct Mode1CompactLine {
+    int n; /* enabled BGs, in priority order (stable by BG index) */
+    uint8_t bg[MODE1_GBA_BG_COUNT];
+    uint8_t bit[MODE1_GBA_BG_COUNT];
+    const uint16_t* tok[MODE1_GBA_BG_COUNT];
+    uint8_t bg_prio[MODE1_GBA_BG_COUNT]; /* indexed by BG number */
+    bool obj_enabled;
+    const uint32_t* obj_layer;
+    const uint8_t* obj_priority;
+    uint16_t bldcnt;
+    Mode1BlendEffect effect;
+    int eva, evb, evy;
+    uint32_t backdrop;
+    const uint8_t* blend_lut;
+    uint8_t win0_ctrl, win1_ctrl, outside_ctrl, objwin_ctrl;
+    bool objwin_on, win0_v_active, win1_v_active, win0_h_wrap, win1_h_wrap;
+    int win0_left, win0_right, win1_left, win1_right;
+} Mode1CompactLine;
+
+/* Layer selection and colour effects of the compact path, in two passes.
+ *
+ * 1. The enabled BGs are painted back to front into two code planes, the
+ *    front-most and the second BG token per pixel (code = token | (bg+1)<<9,
+ *    0 = backdrop). Simple per-layer loops, no per-pixel layer search.
+ * 2. Per pixel the OBJ is placed against those two BGs by priority - in
+ *    front of a BG whose priority is >= its own, exactly where the original
+ *    front-to-back search inserted it - and the colour effect is applied.
+ *
+ * Result is identical to the original loop over the four BG slots. Specialised
+ * on "windowed" (window control 0x3F everywhere otherwise). */
+/* One pixel of the compact path: OBJ placement against the two front BG
+ * codes and the colour effect (without the right-pillar black rule). */
+static inline __attribute__((always_inline)) uint32_t mode1_cc_resolve(const Mode1CompactLine* cp, int x,
+                                                                      unsigned tc, unsigned bc,
+                                                                      uint32_t obj_color, bool visible_obj,
+                                                                      bool allow_sfx) {
+    const uint32_t* const bg_lut = mode1_bg_abgr_lut;
+    uint32_t top_color;
+    unsigned top_layer;
+    unsigned bottom_code; /* 0 backdrop, 0xFFFF the OBJ, else a BG code */
+
+    if (visible_obj && obj_color != 0u) {
+        const unsigned obj_p = cp->obj_priority[x];
+        if (tc == 0u || cp->bg_prio[(tc >> 9u) - 1u] >= obj_p) {
+            top_color = obj_color;
+            top_layer = 4u;
+            bottom_code = tc;
+        } else {
+            top_color = bg_lut[(tc & 0x1FFu) - 1u];
+            top_layer = (tc >> 9u) - 1u;
+            bottom_code = (bc == 0u || cp->bg_prio[(bc >> 9u) - 1u] >= obj_p) ? 0xFFFFu : bc;
+        }
+    } else if (tc != 0u) {
+        top_color = bg_lut[(tc & 0x1FFu) - 1u];
+        top_layer = (tc >> 9u) - 1u;
+        bottom_code = bc;
+    } else {
+        top_color = cp->backdrop;
+        top_layer = 5u;
+        bottom_code = 0u;
+    }
+
+    if (allow_sfx) {
+        const unsigned bottom_layer =
+            bottom_code == 0xFFFFu ? 4u : (bottom_code != 0u ? (bottom_code >> 9u) - 1u : 5u);
+#define MODE1_CC_BOTTOM_COLOR() \
+    (bottom_code == 0xFFFFu ? obj_color : (bottom_code != 0u ? bg_lut[(bottom_code & 0x1FFu) - 1u] : cp->backdrop))
+        if (top_layer == 4u && virtuappu_mode1_obj_semitrans[x]) {
+            if (mode1_is_second_target(cp->bldcnt, (int)bottom_layer)) {
+                top_color = mode1_alpha_blend_lut(cp->blend_lut, top_color, MODE1_CC_BOTTOM_COLOR());
+            } else if (cp->effect == MODE1_BLEND_BRIGHTEN) {
+                top_color = mode1_brighten(top_color, cp->evy);
+            } else if (cp->effect == MODE1_BLEND_DARKEN) {
+                top_color = mode1_darken(top_color, cp->evy);
+            }
+        } else if (cp->effect == MODE1_BLEND_ALPHA) {
+            if (mode1_is_first_target(cp->bldcnt, (int)top_layer) &&
+                mode1_is_second_target(cp->bldcnt, (int)bottom_layer)) {
+                top_color = mode1_alpha_blend_lut(cp->blend_lut, top_color, MODE1_CC_BOTTOM_COLOR());
+            }
+        } else if (cp->effect == MODE1_BLEND_BRIGHTEN) {
+            if (mode1_is_first_target(cp->bldcnt, (int)top_layer))
+                top_color = mode1_brighten(top_color, cp->evy);
+        } else if (cp->effect == MODE1_BLEND_DARKEN) {
+            if (mode1_is_first_target(cp->bldcnt, (int)top_layer))
+                top_color = mode1_darken(top_color, cp->evy);
+        }
+#undef MODE1_CC_BOTTOM_COLOR
+    }
+    return top_color;
+}
+
+/* Layer selection and colour effects of the compact path, in passes.
+ *
+ * 1. The enabled BGs are painted back to front into two code planes, the
+ *    front-most and the second BG token per pixel (code = token | (bg+1)<<9,
+ *    0 = backdrop). Simple per-layer loops, no per-pixel layer search.
+ * 2. Per pixel the OBJ is placed against those two BGs by priority - in
+ *    front of a BG whose priority is >= its own, exactly where the original
+ *    front-to-back search inserted it - and the colour effect is applied.
+ *    Lines without windows and with no effect or alpha blending take a
+ *    split route: colours and a blend flag per pixel first, then the blend
+ *    for 8 pixels at a time.
+ *
+ * Result is identical to the original loop over the four BG slots. Specialised
+ * on "windowed" (window control 0x3F everywhere otherwise). */
+static inline __attribute__((always_inline)) void mode1_compact_composite(const Mode1CompactLine* cp,
+                                                                         int frame_width, uint32_t* out_row,
+                                                                         const bool windowed) {
+    const Mode1CompactLine c = *cp;
+    uint16_t top_code[MODE1_GBA_WIDTH];
+    uint16_t bot_code[MODE1_GBA_WIDTH];
+    uint8_t win_line[MODE1_GBA_WIDTH];
+
+    memset(top_code, 0, (size_t)frame_width * sizeof(uint16_t));
+    memset(bot_code, 0, (size_t)frame_width * sizeof(uint16_t));
+    if (windowed) {
+        for (int x = 0; x < frame_width; ++x) {
+            uint8_t win_ctrl = c.outside_ctrl;
+            /* GBA window precedence: WIN0 > WIN1 > OBJ-window > outside. */
+            if (c.objwin_on && virtuappu_mode1_obj_window[x]) {
+                win_ctrl = c.objwin_ctrl;
+            }
+            if (c.win1_v_active) {
+                const bool in_h = c.win1_h_wrap ? (x >= c.win1_left || x < c.win1_right)
+                                                : (x >= c.win1_left && x < c.win1_right);
+                if (in_h) win_ctrl = c.win1_ctrl;
+            }
+            if (c.win0_v_active) {
+                const bool in_h = c.win0_h_wrap ? (x >= c.win0_left || x < c.win0_right)
+                                                : (x >= c.win0_left && x < c.win0_right);
+                if (in_h) win_ctrl = c.win0_ctrl;
+            }
+            win_line[x] = win_ctrl;
+        }
+    }
+
+    for (int k = c.n - 1; k >= 0; --k) {
+        const uint16_t* const tok = c.tok[k];
+        const uint16_t layer_bits = (uint16_t)((c.bg[k] + 1u) << 9u);
+        if (windowed) {
+            const uint8_t bit = c.bit[k];
+            for (int x = 0; x < frame_width; ++x) {
+                const uint16_t v = (win_line[x] & bit) != 0u ? tok[x] : 0u;
+                const uint16_t old = top_code[x];
+                bot_code[x] = v != 0u ? old : bot_code[x];
+                top_code[x] = v != 0u ? (uint16_t)(v | layer_bits) : old;
+            }
+        } else {
+            int x = 0;
+#ifdef MODE1_NEON
+            const uint16x8_t lb = vdupq_n_u16(layer_bits);
+            for (; x + 8 <= frame_width; x += 8) {
+                const uint16x8_t v = vld1q_u16(tok + x);
+                const uint16x8_t old = vld1q_u16(top_code + x);
+                const uint16x8_t m = vtstq_u16(v, v);
+                vst1q_u16(bot_code + x, vbslq_u16(m, old, vld1q_u16(bot_code + x)));
+                vst1q_u16(top_code + x, vbslq_u16(m, vorrq_u16(v, lb), old));
+            }
+#endif
+            for (; x < frame_width; ++x) {
+                const uint16_t v = tok[x];
+                const uint16_t old = top_code[x];
+                bot_code[x] = v != 0u ? old : bot_code[x];
+                top_code[x] = v != 0u ? (uint16_t)(v | layer_bits) : old;
+            }
+        }
+    }
+
+    if (!windowed && (c.effect == MODE1_BLEND_NONE || c.effect == MODE1_BLEND_ALPHA)) {
+        /* first/second blend target per code layer (code >> 9: 0 = backdrop) */
+        uint8_t first_tab[8] = { 0 };
+        uint8_t second_tab[8] = { 0 };
+        for (unsigned i = 0; i < 5u; ++i) {
+            const int layer = i == 0u ? 5 : (int)i - 1;
+            first_tab[i] = c.effect == MODE1_BLEND_ALPHA && mode1_is_first_target(c.bldcnt, layer) ? 0xFFu : 0u;
+            second_tab[i] = mode1_is_second_target(c.bldcnt, layer) ? 0xFFu : 0u;
+        }
+        const uint32_t* const lut1 = mode1_bg_abgr_lut1;
+        uint32_t bot_col[MODE1_GBA_WIDTH];
+        uint8_t flag[MODE1_GBA_WIDTH];
+        uint8_t any_flag = 0u;
+        for (int x = 0; x < frame_width; ++x) {
+            const unsigned tc = top_code[x];
+            const unsigned bc = bot_code[x];
+            const uint32_t obj_color = c.obj_enabled ? c.obj_layer[x] : 0u;
+            uint32_t color;
+            uint8_t f;
+            if (obj_color != 0u) {
+                color = mode1_cc_resolve(&c, x, tc, bc, obj_color, true, true);
+                f = 0u;
+            } else {
+                color = lut1[tc & 0x1FFu];
+                f = first_tab[tc >> 9u] & second_tab[bc >> 9u];
+            }
+            if (x >= MODE1_GBA_BG_CLIP_X && tc == 0u) {
+                color = 0xFF000000u;
+                f = 0u;
+            }
+            out_row[x] = color;
+            bot_col[x] = lut1[bc & 0x1FFu];
+            flag[x] = f;
+            any_flag |= f;
+        }
+        if (any_flag != 0u) {
+            int x = 0;
+#ifdef MODE1_NEON
+            const uint8x8_t veva = vdup_n_u8((uint8_t)c.eva);
+            const uint8x8_t vevb = vdup_n_u8((uint8_t)c.evb);
+            const uint8x8_t v31 = vdup_n_u8(31u);
+            for (; x + 8 <= frame_width; x += 8) {
+                const uint8x8_t m = vld1_u8(flag + x);
+                if (vget_lane_u64(vreinterpret_u64_u8(m), 0) == 0u)
+                    continue;
+                uint8x8x4_t t = vld4_u8((const uint8_t*)(out_row + x));
+                const uint8x8x4_t b = vld4_u8((const uint8_t*)(bot_col + x));
+                for (int ch = 0; ch < 3; ++ch) {
+                    uint16x8_t sum = vmull_u8(vshr_n_u8(t.val[ch], 3), veva);
+                    sum = vmlal_u8(sum, vshr_n_u8(b.val[ch], 3), vevb);
+                    const uint8x8_t v = vshl_n_u8(vmin_u8(vshrn_n_u16(sum, 4), v31), 3);
+                    t.val[ch] = vbsl_u8(m, v, t.val[ch]);
+                }
+                t.val[3] = vorr_u8(t.val[3], m);
+                vst4_u8((uint8_t*)(out_row + x), t);
+            }
+#endif
+            for (; x < frame_width; ++x) {
+                if (flag[x])
+                    out_row[x] = mode1_alpha_blend_lut(c.blend_lut, out_row[x], bot_col[x]);
+            }
+        }
+        return;
+    }
+
+    for (int x = 0; x < frame_width; ++x) {
+        const uint8_t win_ctrl = windowed ? win_line[x] : 0x3Fu;
+        const bool visible_obj = !windowed || (win_ctrl & 0x10u) != 0u;
+        const bool allow_sfx = !windowed || (win_ctrl & 0x20u) != 0u;
+        const uint32_t obj_color = c.obj_enabled ? c.obj_layer[x] : 0u;
+        const unsigned tc = top_code[x];
+        uint32_t top_color = mode1_cc_resolve(&c, x, tc, bot_code[x], obj_color, visible_obj, allow_sfx);
+
+        if (x >= MODE1_GBA_BG_CLIP_X) {
+            bool any_bg_drew;
+            if (windowed) {
+                any_bg_drew = false;
+                for (int k = 0; k < c.n; ++k)
+                    any_bg_drew |= c.tok[k][x] != 0u;
+            } else {
+                any_bg_drew = tc != 0u;
+            }
+            if (!any_bg_drew)
+                top_color = 0xFF000000u;
+        }
+        out_row[x] = top_color;
+    }
+}
+
 static bool mode1_render_native_compact_line(int line, uint16_t dispcnt, int frame_width) {
     if (!MODE1_NATIVE_FAST_PATHS_ENABLED()) {
         return false;
@@ -2544,135 +2983,48 @@ static bool mode1_render_native_compact_line(int line, uint16_t dispcnt, int fra
         objwin_ctrl = (uint8_t)((winout >> 8u) & 0x3Fu);
     }
 
-    const uint32_t backdrop_color = mode1_bg_abgr_lut[0];
-    const bool no_effect_fast_path = effect == MODE1_BLEND_NONE;
-    const bool has_second_targets = (bldcnt & 0x3F00u) != 0u;
-    uint32_t* const out_row = mode1_output_row(line);
-
-    for (int x = 0; x < frame_width; ++x) {
-        uint8_t win_ctrl = 0x3Fu;
-        if (any_window) {
-            win_ctrl = outside_ctrl;
-            /* GBA window precedence: WIN0 > WIN1 > OBJ-window > outside. */
-            if (objwin_on && virtuappu_mode1_obj_window[x]) {
-                win_ctrl = objwin_ctrl;
-            }
-            if (win1_v_active) {
-                const bool in_h = win1_h_wrap ? (x >= win1_left || x < win1_right)
-                                                   : (x >= win1_left && x < win1_right);
-                if (in_h) win_ctrl = win1_ctrl;
-            }
-            if (win0_v_active) {
-                const bool in_h = win0_h_wrap ? (x >= win0_left || x < win0_right)
-                                                   : (x >= win0_left && x < win0_right);
-                if (in_h) win_ctrl = win0_ctrl;
-            }
-        }
-
-        const bool any_bg_drew = (bg_enabled[0] && bg_tokens[0][x] != 0u) ||
-                                 (bg_enabled[1] && bg_tokens[1][x] != 0u) ||
-                                 (bg_enabled[2] && bg_tokens[2][x] != 0u) ||
-                                 (bg_enabled[3] && bg_tokens[3][x] != 0u);
-        const bool visible_obj = (win_ctrl & 0x10u) != 0u;
-        const bool allow_sfx = (win_ctrl & 0x20u) != 0u;
-        const bool obj_candidate = obj_enabled && visible_obj && obj_layer[x] != 0u;
-        const unsigned obj_p = obj_candidate ? obj_priority[x] : 0xFFu;
-        uint32_t top_color = backdrop_color;
-        int top_layer = 5;
-        uint32_t bottom_color = backdrop_color;
-        int bottom_layer = 5;
-        bool found_top = false;
-        bool found_bottom = false;
-
-        if (no_effect_fast_path &&
-            !(allow_sfx && obj_candidate && virtuappu_mode1_obj_semitrans[x] && has_second_targets)) {
-            for (int order_index = 0; order_index < MODE1_GBA_BG_COUNT; ++order_index) {
-                const int bg = bg_order[order_index];
-                if (obj_candidate && bg_order_priority[bg] >= obj_p) {
-                    top_color = obj_layer[x];
-                    found_top = true;
-                    break;
-                }
-                const uint16_t token = bg_enabled[bg] ? bg_tokens[bg][x] : 0u;
-                if ((win_ctrl & (uint8_t)(1u << bg)) != 0u && token != 0u) {
-                    top_color = mode1_bg_abgr_lut[token - 1u];
-                    found_top = true;
-                    break;
-                }
-            }
-            if (!found_top && obj_candidate)
-                top_color = obj_layer[x];
-            out_row[x] = x >= MODE1_GBA_BG_CLIP_X && !any_bg_drew ? 0xFF000000u : top_color;
+    Mode1CompactLine c;
+    c.n = 0;
+    for (int order_index = 0; order_index < MODE1_GBA_BG_COUNT; ++order_index) {
+        const int bg = bg_order[order_index];
+        c.bg_prio[bg] = bg_order_priority[bg];
+        if (!bg_enabled[bg])
             continue;
-        }
-
-        bool obj_emitted = false;
-#define MODE1_COMPACT_CONSIDER(_color, _layer) \
-    do {                                          \
-        if (!found_top) {                         \
-            top_color = (_color);                 \
-            top_layer = (_layer);                 \
-            found_top = true;                     \
-        } else {                                  \
-            bottom_color = (_color);              \
-            bottom_layer = (_layer);              \
-            found_bottom = true;                  \
-        }                                         \
-    } while (0)
-
-        for (int order_index = 0; order_index < MODE1_GBA_BG_COUNT && !found_bottom; ++order_index) {
-            const int bg = bg_order[order_index];
-            if (obj_candidate && !obj_emitted && bg_order_priority[bg] >= obj_p) {
-                MODE1_COMPACT_CONSIDER(obj_layer[x], 4);
-                obj_emitted = true;
-                if (found_bottom)
-                    break;
-            }
-            const uint16_t token = bg_enabled[bg] ? bg_tokens[bg][x] : 0u;
-            if ((win_ctrl & (uint8_t)(1u << bg)) != 0u && token != 0u) {
-                MODE1_COMPACT_CONSIDER(mode1_bg_abgr_lut[token - 1u], bg);
-            }
-        }
-        if (obj_candidate && !obj_emitted && !found_bottom) {
-            MODE1_COMPACT_CONSIDER(obj_layer[x], 4);
-        }
-#undef MODE1_COMPACT_CONSIDER
-
-        if (allow_sfx) {
-            if (top_layer == 4 && virtuappu_mode1_obj_semitrans[x]) {
-                if (mode1_is_second_target(bldcnt, bottom_layer)) {
-                    top_color = mode1_alpha_blend(top_color, bottom_color, eva, evb);
-                } else if (effect == MODE1_BLEND_BRIGHTEN) {
-                    top_color = mode1_brighten(top_color, evy);
-                } else if (effect == MODE1_BLEND_DARKEN) {
-                    top_color = mode1_darken(top_color, evy);
-                }
-            } else {
-                switch (effect) {
-                    case MODE1_BLEND_ALPHA:
-                        if (mode1_is_first_target(bldcnt, top_layer) &&
-                            mode1_is_second_target(bldcnt, bottom_layer)) {
-                            top_color = mode1_alpha_blend(top_color, bottom_color, eva, evb);
-                        }
-                        break;
-                    case MODE1_BLEND_BRIGHTEN:
-                        if (mode1_is_first_target(bldcnt, top_layer)) {
-                            top_color = mode1_brighten(top_color, evy);
-                        }
-                        break;
-                    case MODE1_BLEND_DARKEN:
-                        if (mode1_is_first_target(bldcnt, top_layer)) {
-                            top_color = mode1_darken(top_color, evy);
-                        }
-                        break;
-                    default:
-                        break;
-                }
-            }
-        }
-
-        out_row[x] = x >= MODE1_GBA_BG_CLIP_X && !any_bg_drew ? 0xFF000000u : top_color;
+        c.bg[c.n] = (uint8_t)bg;
+        c.bit[c.n] = (uint8_t)(1u << bg);
+        c.tok[c.n] = bg_tokens[bg];
+        ++c.n;
     }
+    c.obj_enabled = obj_enabled;
+    c.obj_layer = obj_layer;
+    c.obj_priority = obj_priority;
+    c.bldcnt = bldcnt;
+    c.effect = effect;
+    c.eva = eva;
+    c.evb = evb;
+    c.evy = evy;
+    c.backdrop = mode1_bg_abgr_lut[0];
+    c.blend_lut = (effect == MODE1_BLEND_ALPHA || (obj_enabled && (bldcnt & 0x3F00u) != 0u))
+                      ? mode1_prepare_blend_lut(eva, evb)
+                      : NULL;
+    c.win0_ctrl = win0_ctrl;
+    c.win1_ctrl = win1_ctrl;
+    c.outside_ctrl = outside_ctrl;
+    c.objwin_ctrl = objwin_ctrl;
+    c.objwin_on = objwin_on;
+    c.win0_v_active = win0_v_active;
+    c.win1_v_active = win1_v_active;
+    c.win0_h_wrap = win0_h_wrap;
+    c.win1_h_wrap = win1_h_wrap;
+    c.win0_left = win0_left;
+    c.win0_right = win0_right;
+    c.win1_left = win1_left;
+    c.win1_right = win1_right;
+    uint32_t* const out_row = mode1_output_row(line);
+    if (any_window)
+        mode1_compact_composite(&c, frame_width, out_row, true);
+    else
+        mode1_compact_composite(&c, frame_width, out_row, false);
 
     MODE1_RECORD_NATIVE_COMPACT_TEST_LINE();
     return true;
