@@ -26,6 +26,14 @@ void TmcPlatform_FrameHook(void) {
     static unsigned a, r, x, y;
     ++sFrame;
     gHostForcedKeys = 0;
+    {
+        extern void TmcVitaUi_TestQuickSave(void);
+        extern void TmcVitaUi_TestQuickLoad(void);
+        const char* qs = getenv("TMC_QSAVE_AT");
+        const char* ql = getenv("TMC_QLOAD_AT");
+        if (qs && sFrame == (unsigned)atoi(qs)) { fprintf(stderr, "[test] quick save @%u\n", sFrame); TmcVitaUi_TestQuickSave(); }
+        if (ql && sFrame == (unsigned)atoi(ql)) { fprintf(stderr, "[test] quick load @%u\n", sFrame); TmcVitaUi_TestQuickLoad(); }
+    }
     if (active < 0) {
         const char* e = getenv("TMC_BOOT");
         active = e && sscanf(e, "%x,%x,%x,%x", &a, &r, &x, &y) == 4;

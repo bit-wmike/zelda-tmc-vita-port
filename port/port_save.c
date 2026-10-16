@@ -53,6 +53,12 @@
 #else
 #include <dirent.h>
 #include <unistd.h>
+#ifdef TMC_VITA
+/* sceIoSyncByFd is not supported on every Vita storage device; a failing
+ * fsync must not turn an otherwise complete save into an error. */
+int TmcVita_Fsync(int fd);
+#define fsync(fd) TmcVita_Fsync(fd)
+#endif
 #endif
 
 #define EEPROM_SIZE 8192                           /* 8 KB */

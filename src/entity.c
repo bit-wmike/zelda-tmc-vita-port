@@ -35,6 +35,12 @@ Temp gUnk_02033290[32] __attribute__((aligned(8)));
 #ifdef PC_PORT
 #include <stdio.h> /* fprintf for the entity-list cycle warning in GetEmptyEntity */
 
+/* A deleted entity is marked with prev == (Entity*)-1. The GBA original
+ * tested "prev < 0", which only works while real pointers are below
+ * 0x80000000 (GBA RAM, PC, 3DS). On the PS Vita all user memory lives at
+ * 0x81000000+, so every live entity looked deleted. Test the marker itself. */
+#define PORT_ENTITY_IS_DELETED_PREV(p) ((intptr_t)(p) == (intptr_t)-1)
+
 /* Bounded-iteration safety shared by every gEntityLists walker in this
  * file. The Lake Hylia warp repro produced a `next`-pointer cycle that
  * didn't include the list head sentinel, so the unguarded `i != list`
@@ -384,14 +390,14 @@ Entity* GetEmptyEntity() {
         int i;
         Entity* ent;
         ent = &gPlayerEntity.base;
-        if ((intptr_t)ent->prev < 0 && (ent->flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
+        if (PORT_ENTITY_IS_DELETED_PREV(ent->prev) && (ent->flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
             ent != gUpdateContext.current_entity) {
             ClearDeletedEntity(ent);
             return ent;
         }
         for (i = 0; i < MAX_AUX_PLAYER_ENTITIES; i++) {
             ent = &gAuxPlayerEntities[i].base;
-            if ((intptr_t)ent->prev < 0 && (ent->flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
+            if (PORT_ENTITY_IS_DELETED_PREV(ent->prev) && (ent->flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
                 ent != gUpdateContext.current_entity) {
                 ClearDeletedEntity(ent);
                 return ent;
@@ -399,7 +405,7 @@ Entity* GetEmptyEntity() {
         }
         for (i = 0; i < MAX_ENTITIES; i++) {
             ent = &gEntities[i].base;
-            if ((intptr_t)ent->prev < 0 && (ent->flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
+            if (PORT_ENTITY_IS_DELETED_PREV(ent->prev) && (ent->flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
                 ent != gUpdateContext.current_entity) {
                 ClearDeletedEntity(ent);
                 return ent;
@@ -410,7 +416,7 @@ Entity* GetEmptyEntity() {
     currentEnt = (GenericEntity*)&gPlayerEntity.base;
 
     do {
-        if ((intptr_t)currentEnt->base.prev < 0 && (currentEnt->base.flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
+        if (PORT_ENTITY_IS_DELETED_PREV(currentEnt->base.prev) && (currentEnt->base.flags & (ENT_UNUSED1 | ENT_UNUSED2)) &&
             (Entity*)currentEnt != gUpdateContext.current_entity) {
             ClearDeletedEntity(&currentEnt->base);
             return &currentEnt->base;
@@ -563,7 +569,7 @@ Entity* GetEmptyEntity() {
             /* Try the first available recovered slot. */
             for (i = 0; i < MAX_ENTITIES; i++) {
                 Entity* ent = &gEntities[i].base;
-                if ((intptr_t)ent->prev < 0 && (ent->flags & ENT_UNUSED1) && ent != gUpdateContext.current_entity) {
+                if (PORT_ENTITY_IS_DELETED_PREV(ent->prev) && (ent->flags & ENT_UNUSED1) && ent != gUpdateContext.current_entity) {
                     ClearDeletedEntity(ent);
                     return ent;
                 }
@@ -673,21 +679,21 @@ void ClearAllDeletedEntities(void) {
 #ifdef PC_PORT
     /* On PC, gPlayerEntity/gAuxPlayerEntities/gEntities are separate globals. */
     int i;
-    if ((intptr_t)gPlayerEntity.base.prev < 0)
+    if (PORT_ENTITY_IS_DELETED_PREV(gPlayerEntity.base.prev))
         ClearDeletedEntity(&gPlayerEntity.base);
     for (i = 0; i < MAX_AUX_PLAYER_ENTITIES; i++) {
-        if ((intptr_t)gAuxPlayerEntities[i].base.prev < 0)
+        if (PORT_ENTITY_IS_DELETED_PREV(gAuxPlayerEntities[i].base.prev))
             ClearDeletedEntity(&gAuxPlayerEntities[i].base);
     }
     for (i = 0; i < MAX_ENTITIES; i++) {
-        if ((intptr_t)gEntities[i].base.prev < 0)
+        if (PORT_ENTITY_IS_DELETED_PREV(gEntities[i].base.prev))
             ClearDeletedEntity(&gEntities[i].base);
     }
 #else
     GenericEntity* ent = (GenericEntity*)&gPlayerEntity.base;
     do {
         //! @bug if prev pointed to a VALID location higher than a signed int, would still be deleted
-        if ((intptr_t)ent->base.prev < 0) {
+        if (PORT_ENTITY_IS_DELETED_PREV(ent->base.prev)) {
             ClearDeletedEntity(&ent->base);
         }
     } while (ent++, ent < (((GenericEntity*)&gPlayerEntity.base) + 80));

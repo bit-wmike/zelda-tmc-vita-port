@@ -192,3 +192,14 @@ void Port_SecondScreen_3DS_LockUI(void) { pthread_mutex_lock(&sUiLock); }
 void Port_SecondScreen_3DS_UnlockUI(void) { pthread_mutex_unlock(&sUiLock); }
 void Port_SecondScreen_3DS_LockSnapshot(void) { pthread_mutex_lock(&sSnapLock); }
 void Port_SecondScreen_3DS_UnlockSnapshot(void) { pthread_mutex_unlock(&sSnapLock); }
+
+#include <unistd.h>
+int TmcVita_Fsync(int fd) {
+    static int sLogged;
+    const int rc = fsync(fd);
+    if (rc != 0 && !sLogged) {
+        sLogged = 1;
+        TmcDiag_Logf("[io] fsync not supported here (rc=%d), continuing without it\n", rc);
+    }
+    return 0;
+}

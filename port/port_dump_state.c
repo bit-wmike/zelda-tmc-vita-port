@@ -13,6 +13,12 @@
 #include <time.h>
 #include <stdlib.h>
 #include <unistd.h>
+#ifdef TMC_VITA
+/* sceIoSyncByFd is not supported on every Vita storage device; a failing
+ * fsync must not turn an otherwise complete save into an error. */
+int TmcVita_Fsync(int fd);
+#define fsync(fd) TmcVita_Fsync(fd)
+#endif
 
 #define PORT_DUMP_STATE_VERSION 1u
 #define PORT_DUMP_STATE_MAX_PATH 512

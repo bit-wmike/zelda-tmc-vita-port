@@ -240,6 +240,11 @@ static void ActQuickSave(void) {
 }
 static bool sPendingQuickLoad, sPendingReset, sPendingQuit;
 static void ActQuickLoad(void) { sPendingQuickLoad = true; }
+#ifndef __vita__
+/* Test-host hooks (host_boot.c): exercise the quick state paths. */
+void TmcVitaUi_TestQuickSave(void) { ActQuickSave(); }
+void TmcVitaUi_TestQuickLoad(void) { ActQuickLoad(); }
+#endif
 static void ActReset(void) { sPendingReset = true; }
 static void ActQuit(void) { sPendingQuit = true; }
 

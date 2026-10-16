@@ -189,10 +189,40 @@ long readlink(const char* path, char* buf, unsigned long bufsiz) {
     return -1;
 }
 
-/* libgcc's emulated TLS (used for the renderer's per-scanline __thread
- * buffers) only switches to real per-thread storage when it sees
- * pthread_cancel linked in; it checks a weak reference. Without this
- * reference all three render threads silently share one buffer, which made
- * sprites vanish (file-select buttons, menu cursors). Keep it referenced. */
+/* libgcc/libstdc++ ("gthreads") reach pthreads only through *weak*
+ * references. A weak reference never pulls an object out of a static
+ * archive, so on the Vita every one of them resolved to NULL:
+ *  - pthread_cancel == NULL made gthreads think the program is single
+ *    threaded, so the emulated TLS behind the renderer's __thread scanline
+ *    buffers (and std::mutex in the audio mixer) were shared/no-ops;
+ *  - once that is fixed, pthread_once/getspecific/... == NULL would make the
+ *    first TLS access jump to address 0.
+ * Taking the address of every gthreads entry point forces them all in. */
 #include <pthread.h>
-void* volatile gTmcKeepPthreadCancel = (void*)&pthread_cancel;
+#include <sched.h>
+void* const gTmcGthreadsLink[] = {
+    (void*)&pthread_attr_destroy,   (void*)&pthread_attr_init,      (void*)&pthread_attr_setdetachstate,
+    (void*)&pthread_cancel,         (void*)&pthread_cond_broadcast, (void*)&pthread_cond_destroy,
+    (void*)&pthread_cond_init,      (void*)&pthread_cond_signal,    (void*)&pthread_cond_timedwait,
+    (void*)&pthread_cond_wait,      (void*)&pthread_create,         (void*)&pthread_detach,
+    (void*)&pthread_equal,          (void*)&pthread_exit,           (void*)&pthread_getschedparam,
+    (void*)&pthread_getspecific,    (void*)&pthread_join,           (void*)&pthread_key_create,
+    (void*)&pthread_key_delete,     (void*)&pthread_mutex_destroy,  (void*)&pthread_mutex_init,
+    (void*)&pthread_mutex_lock,     (void*)&pthread_mutex_timedlock, (void*)&pthread_mutex_trylock,
+    (void*)&pthread_mutex_unlock,   (void*)&pthread_mutexattr_destroy, (void*)&pthread_mutexattr_init,
+    (void*)&pthread_mutexattr_settype, (void*)&pthread_once,        (void*)&pthread_rwlock_rdlock,
+    (void*)&pthread_rwlock_tryrdlock, (void*)&pthread_rwlock_trywrlock, (void*)&pthread_rwlock_unlock,
+    (void*)&pthread_rwlock_wrlock,  (void*)&pthread_self,           (void*)&pthread_setschedparam,
+    (void*)&pthread_setspecific,    (void*)&sched_get_priority_max, (void*)&sched_get_priority_min,
+    (void*)&sched_yield,
+};
+
+/* Called once at start-up: logs whether the gthreads layer is live. */
+void TmcVita_CheckGthreads(void) {
+    int missing = 0;
+    for (unsigned i = 0; i < sizeof(gTmcGthreadsLink) / sizeof(gTmcGthreadsLink[0]); ++i)
+        if (gTmcGthreadsLink[i] == NULL) ++missing;
+    char line[64];
+    snprintf(line, sizeof(line), "[thread] gthreads entry points missing=%d\n", missing);
+    TmcSys_Log(line);
+}

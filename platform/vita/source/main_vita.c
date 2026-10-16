@@ -104,6 +104,8 @@ int main(int argc, char** argv) {
     TmcVitaSys_OpenLog(APP_DIR "/log.txt");
     TmcSys_Log("The Minish Cap Vita " TMC_PORT_VERSION "\n");
     TmcDiag_LogSystemInfo();
+    extern void TmcVita_CheckGthreads(void);
+    TmcVita_CheckGthreads();
     TmcVitaSys_Init();
     if (!TmcVitaVideo_Init()) {
         TmcSys_Log("video init failed\n");

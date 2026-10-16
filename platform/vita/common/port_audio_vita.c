@@ -10,6 +10,7 @@
 
 #include <math.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -27,6 +28,22 @@ static int16_t sBuffer[2][BUFFER_FRAMES * 2];
 static _Atomic float sVolume = 1.0f;
 
 extern float Port_Config_GetMasterVolume(void);
+
+static bool sSyncMode;
+
+#ifndef __vita__
+void TmcAudio_HostSyncFrame(void) {
+    static unsigned sAcc;
+    if (!sSyncMode) return;
+    sAcc += (unsigned)((unsigned long long)TMC_AUDIO_RATE * 1000000ull / 59727ull); /* samples/frame x1000 */
+    while (sAcc >= BUFFER_FRAMES * 1000u) {
+        sAcc -= BUFFER_FRAMES * 1000u;
+        if (sPaused) memset(sBuffer[0], 0, sizeof(sBuffer[0]));
+        else Port_M4A_Backend_Render(sBuffer[0], BUFFER_FRAMES, false);
+        TmcAudio_Output(sBuffer[0]);
+    }
+}
+#endif
 
 static void* AudioThread(void* arg) {
     (void)arg;
@@ -70,6 +87,15 @@ bool Port_Audio_Init(void) {
     Port_M4A_Backend_SetMasterVolume(sVolume);
     sRunning = true;
     sPaused = false;
+#ifndef __vita__
+    /* Test host only: TMC_AUDIO_SYNC renders audio on the game thread, one
+     * buffer per accumulated 512 samples, so runs are bit-reproducible. */
+    if (getenv("TMC_AUDIO_SYNC")) {
+        sSyncMode = true;
+        sInitialized = true;
+        return true;
+    }
+#endif
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 256 * 1024);
@@ -88,7 +114,7 @@ bool Port_Audio_Init(void) {
 void Port_Audio_Shutdown(void) {
     if (!sInitialized) return;
     sRunning = false;
-    pthread_join(sThread, NULL);
+    if (!sSyncMode) pthread_join(sThread, NULL);
     TmcAudio_Close();
     Port_M4A_Backend_Shutdown();
     sInitialized = false;

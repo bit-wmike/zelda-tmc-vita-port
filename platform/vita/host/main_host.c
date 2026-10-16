@@ -1,3 +1,4 @@
+#include <malloc.h>
 #include "port_audio.h"
 #include "port_ppu.h"
 #include "port_rom.h"
@@ -23,5 +24,9 @@ int main(int argc, char** argv) {
     if (!Port_Audio_Init()) fprintf(stderr, "audio unavailable\n");
     AgbMain();
     fprintf(stderr, "[host] engine returned\n");
+    Port_Audio_Shutdown();
+    if (getenv("TMC_MALLOC_STATS")) malloc_stats();
+    Port_PPU_Shutdown();
+    fprintf(stderr, "[host] shutdown complete\n");
     return 0;
 }

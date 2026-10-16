@@ -58,7 +58,7 @@ PORT_SRC := $(addprefix $(ROOT)/,\
     port/ppu/src/virtuappu.c port/ppu/src/mode1.c)
 
 COMMON_SRC := $(wildcard common/*.c)
-ifneq ($(filter host armhost,$(TARGET)),)
+ifneq ($(filter host armhost armlow,$(TARGET)),)
 PLAT_SRC := $(wildcard host/*.c) $(COMMON_SRC)
 else
 PLAT_SRC := $(wildcard source/*.c) $(COMMON_SRC)
@@ -91,8 +91,15 @@ else ifeq ($(TARGET),armhost)
 CC := arm-linux-gnueabihf-gcc
 CXX := arm-linux-gnueabihf-g++
 ARCH_FLAGS := -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb -g -pthread
-LDLIBS := -lm -pthread -static
+LDLIBS := -lm -pthread -static -Wl,-Ttext-segment=0x81000000
 OUT := $(BUILD)/tmc_armhost
+else ifeq ($(TARGET),armlow)
+# armhost at ordinary low addresses: differential reference for armhost.
+CC := arm-linux-gnueabihf-gcc
+CXX := arm-linux-gnueabihf-g++
+ARCH_FLAGS := -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb -g -pthread
+LDLIBS := -lm -pthread -static
+OUT := $(BUILD)/tmc_armlow
 else
 PREFIX := arm-vita-eabi
 CC := $(VITASDK)/bin/$(PREFIX)-gcc

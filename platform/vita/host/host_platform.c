@@ -79,6 +79,7 @@ void TmcVideo_Present(const uint32_t* pixels, int width, int height, int pitch, 
         next += 16667;
     }
     ++sPresented;
+    { extern void TmcAudio_HostSyncFrame(void); TmcAudio_HostSyncFrame(); }
     if (ShouldDump(sPresented)) {
         char path[512];
         snprintf(path, sizeof(path), "%s/frame_%05u.ppm", sOutDir, sPresented);
