@@ -132,9 +132,19 @@ void Platform3DS_SetTurboMultiplier(unsigned m) { sTurboMultiplier = m < 2 ? 2 :
 
 extern bool TmcVita_GamePaused(void);
 
+extern bool Port_Config_VitaHalfRate(void);
+static unsigned sHalfRatePhase;
+
 bool Platform3DS_BeginFrameBoundary(void) {
     if (!Platform3DS_TurboHeld()) {
         sTurboPhase = 0;
+        /* 30 fps mode: the game still runs 60 logic frames per second; only
+         * every second one is rendered and shown. The presenter waits two
+         * display refreshes per shown frame, so the speed stays exact. */
+        if (Port_Config_VitaHalfRate()) {
+            sHalfRatePhase ^= 1u;
+            return sHalfRatePhase == 0;
+        }
         return true;
     }
     sTurboPhase = (sTurboPhase + 1) % sTurboMultiplier;

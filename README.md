@@ -15,7 +15,8 @@ and runs as native ARM code on the Vita.
 ## Features
 
 - Native port at 60 fps; the software renderer uses all three application cores.
-- Widescreen at the original pixel aspect ratio, plus an experimental 400×240 Full View.
+- Widescreen at the original pixel aspect ratio, plus Full View: the whole room up to
+  400×240 at one constant zoom level, with an optional steady 30 fps mode.
 - Display styles: Smooth, Sharp (crisp pixels without shimmer) and Pixel Perfect.
 - Map and status overlay (the 3DS bottom screen), usable with the front touch screen.
 - Extra item slots on △ / □ and the right stick; optional rear touch.

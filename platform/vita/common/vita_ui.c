@@ -54,6 +54,8 @@ extern bool Port_Config_VitaFullView(void);
 extern bool Port_Config_VitaRenderThreads(void);
 extern void Port_Config_SetVitaRenderThreads(bool on);
 extern void Port_Config_SetVitaFullView(bool on);
+extern bool Port_Config_VitaHalfRate(void);
+extern void Port_Config_SetVitaHalfRate(bool on);
 extern int Port_Config_Get3DSDisplayStyle(void);
 extern int Port_DebugAction_AreaIsWarpable(unsigned char area);
 extern bool Port_Config_AutosaveEnabled(void);
@@ -121,6 +123,8 @@ static int GetWide(void) { return Port_Config_WidescreenEnabled(); }
 static void SetWide(int v) { Port_Config_SetWidescreenEnabled(v != 0); }
 static int GetFullView(void) { return Port_Config_VitaFullView(); }
 static void SetFullView(int v) { Port_Config_SetVitaFullView(v != 0); }
+static int GetHalfRate(void) { return Port_Config_VitaHalfRate(); }
+static void SetHalfRate(int v) { Port_Config_SetVitaHalfRate(v != 0); }
 static int GetColor(void) { return Port_Config_GetColorCorrection(); }
 static void SetColor(int v) {
     Port_Config_SetColorCorrection(v != 0);
@@ -257,8 +261,10 @@ static const MenuItem kDisplayItems[] = {
     { IT_CHOICE, "Bildstil", "Scharf: knackige Pixel ohne Flimmern. Pixelgenau: exakt 3-fach.", GetStyle, SetStyle,
       NULL, kStyleNames, 0, 2, 1, false },
     TOGGLE("Breitbild", "Mehr Spielwelt links und rechts sichtbar (Originalverh\xc3\xa4ltnis).", Wide),
-    TOGGLE("Weitsicht (experimentell)", "Drau\xc3\x9f" "en 400x240: deutlich mehr Welt sichtbar, kleinere Figuren.",
+    TOGGLE("Weitsicht", "Zeigt bis zu 400x240 (ganze R\xc3\xa4ume) mit immer gleichem Zoom; kleine R\xc3\xa4ume mit Rand.",
            FullView),
+    TOGGLE("Bildrate 30 (konstant)", "Zeichnet jedes zweite Bild: gleichm\xc3\xa4\xc3\x9f" "ige 30 FPS bei normalem Spieltempo. "
+           "Empfohlen mit Weitsicht.", HalfRate),
     TOGGLE("GBA-Farbkorrektur", "Farben wie auf dem GBA-Bildschirm (etwas blasser).", Color),
     { IT_SLIDER, "Lautst\xc3\xa4rke", NULL, GetVolume, SetVolume, NULL, NULL, 0, 100, 10, false },
     TOGGLE("FPS anzeigen", NULL, Fps),

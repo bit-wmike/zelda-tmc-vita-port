@@ -69,6 +69,19 @@ Port3DSFullViewMode Port3DSFullViewPolicy_Decide(const Port3DSFullViewInputs* in
         return PORT_3DS_FULL_VIEW_FALLBACK;
     }
 
+#ifdef TMC_VITA
+    /* Vita: one presentation everywhere, outdoors and indoors. The view is
+     * the room itself capped to 400x240 (fitWidth/fitHeight), so a 272x208
+     * dungeon room is shown whole instead of a scrolling 266x160 window. A
+     * room no bigger than the GBA screen needs no Full View at all. */
+    if (inputs->fitWidth >= 240 && inputs->fitHeight >= 160 &&
+        (inputs->fitWidth > 240 || inputs->fitHeight > 160)) {
+        if (reason != 0) *reason = PORT_3DS_FULL_VIEW_REASON_NONE;
+        return PORT_3DS_FULL_VIEW_OUTDOOR_1X;
+    }
+    if (reason != 0) *reason = PORT_3DS_FULL_VIEW_REASON_OUTDOOR_BOUNDS;
+    return PORT_3DS_FULL_VIEW_FALLBACK;
+#endif
     if (inputs->areaIsExterior) {
         /* Never ask the engine for a 400x240 camera unless both the room and
          * the ratcheted painted-content scan can feed every requested pixel. */
@@ -83,13 +96,6 @@ Port3DSFullViewMode Port3DSFullViewPolicy_Decide(const Port3DSFullViewInputs* in
         return PORT_3DS_FULL_VIEW_OUTDOOR_1X;
     }
 
-#ifdef TMC_VITA
-    /* The 200x120 interior crop exists to fill the 3DS 400x240 screen with an
-     * exact 2x scale. On the Vita it would show less than the 266x160
-     * widescreen view, at a bigger zoom, so interiors keep that view. */
-    if (reason != 0) *reason = PORT_3DS_FULL_VIEW_REASON_INTERIOR_BOUNDS;
-    return PORT_3DS_FULL_VIEW_FALLBACK;
-#endif
     if (inputs->roomWidth < PORT_3DS_INTERIOR_CROP_WIDTH ||
         inputs->roomHeight < PORT_3DS_INTERIOR_CROP_HEIGHT ||
         inputs->contentWidth < PORT_3DS_INTERIOR_CROP_WIDTH ||

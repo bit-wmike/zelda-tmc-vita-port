@@ -7,6 +7,7 @@
 #include "save.h"
 #include "fileselect.h"
 #include "room.h"
+#include "area.h"
 #include "player.h"
 #include "port_debug_actions.h"
 #include "port_runtime_config.h"
@@ -70,6 +71,23 @@ void TmcPlatform_FrameHook(void) {
         }
         MessageFromTarget((u32)strtoul(getenv("TMC_MSG"), NULL, 0));
         fprintf(stderr, "[test] message %s @%u\n", getenv("TMC_MSG"), sFrame);
+    }
+    if (getenv("TMC_FV_DEBUG") && sFrame % 50 == 0) {
+        extern int Port_Widescreen_3DSFallbackReason(void);
+        extern const char* Port3DSFullViewPolicy_FallbackReasonName(int reason);
+        fprintf(stderr, "[fv] frame=%u area=%x room=%x room=%ux%u reason=%s\n", sFrame, gRoomControls.area,
+                gRoomControls.room, (unsigned)gRoomControls.width, (unsigned)gRoomControls.height,
+                Port3DSFullViewPolicy_FallbackReasonName(Port_Widescreen_3DSFallbackReason()));
+    }
+    if (getenv("TMC_LIST_ROOMS") && sFrame == 120) {
+        /* Print every room's pixel size (to find rooms that fit Full View). */
+        extern RoomHeader* gAreaRoomHeaders[];
+        for (int area = 0; area < 0x90; ++area) {
+            const RoomHeader* h = gAreaRoomHeaders[area];
+            if (!h) continue;
+            for (int room = 0; room < 64 && h[room].map_x != 0xffff; ++room)
+                fprintf(stderr, "[room] %02x %02x %ux%u\n", area, room, h[room].pixel_width, h[room].pixel_height);
+        }
     }
     if (getenv("TMC_OAM_DUMP") && sFrame == (unsigned)atoi(getenv("TMC_OAM_DUMP"))) {
         extern u16 gOamMem[0x200];

@@ -52,6 +52,16 @@ static uint32_t sFrameCount;
  * the frame before it is shown. */
 extern void TmcVita_BeforePresent(uint32_t* pixels, int* width, int* height, int pitch);
 
+/* With Full View enabled the Vita keeps one zoom level during gameplay: the
+ * presenter scales every game frame as if it were 240 lines high, so a
+ * smaller view (small room, room transition, GBA window effect) shows with a
+ * border instead of zooming in. */
+extern bool Port_Config_VitaFullView(void);
+extern int Port_Widescreen_GameplayCanvas(void);
+int TmcVita_KeepZoom(void) {
+    return Port_Config_VitaFullView() && Port_Widescreen_GameplayCanvas();
+}
+
 static int WideFrameWidth(void) {
     Port_Widescreen_SetWindowPixels(960, 544);
     if (Port_Widescreen_IsActive() && Port_Widescreen_ShadowsLive()) {
@@ -76,8 +86,11 @@ static void SelectFrame(int* width, int* height) {
     }
     if (mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X && MODE1_GBA_WIDTH >= 400 && MODE1_GBA_HEIGHT >= 240 &&
         Port_Widescreen_ShadowsLive()) {
-        *width = 400;
-        *height = 240;
+        /* The room itself, capped to 400x240 (Port_Widescreen_*ViewWidth). */
+        *width = Port_Widescreen_EffectiveViewWidth();
+        *height = Port_Widescreen_EffectiveViewHeight();
+        if (*width > MODE1_GBA_WIDTH) *width = MODE1_GBA_WIDTH;
+        if (*height > MODE1_GBA_HEIGHT) *height = MODE1_GBA_HEIGHT;
         return;
     }
     if (mode == PORT_3DS_FULL_VIEW_INTERIOR_2X && Port_Widescreen_ShadowsLive()) {

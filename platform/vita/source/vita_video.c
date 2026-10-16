@@ -63,10 +63,15 @@ static void Upload(vita2d_texture* tex, const uint32_t* pixels, int width, int h
     }
 }
 
+extern int TmcVita_KeepZoom(void);
+
 static void GameRect(int width, int height, int style, float* scale, float* dx, float* dy) {
-    float sc = 544.0f / (float)height;
+    /* Full View: one zoom for every gameplay frame (the 240-line view fills
+     * the screen height; smaller frames get a border). */
+    const int refHeight = TmcVita_KeepZoom() ? 240 : height;
+    float sc = 544.0f / (float)refHeight;
     if (style == 2) {
-        sc = (float)(int)(544 / height);
+        sc = (float)(int)(544 / refHeight);
         if (sc < 1.0f) sc = 1.0f;
     }
     *scale = sc;
@@ -117,7 +122,21 @@ void TmcVideo_Present(const uint32_t* pixels, int width, int height, int pitch, 
     }
     TmcVita_DrawUi();
     vita2d_end_drawing();
-    vita2d_swap_buffers();
+    {
+        /* 30 fps mode: submit at most one frame per two display refreshes.
+         * vita2d hands the flip to its display-queue thread, so swap returns
+         * at once and the queue alone would accept a frame every refresh
+         * (two logic frames per refresh = double speed). Waiting here for the
+         * second refresh since the last submission keeps exactly 60 logic
+         * frames per second; a frame that took longer needs no extra wait. */
+        extern bool Port_Config_VitaHalfRate(void);
+        static unsigned sLastPresentVcount;
+        if (Port_Config_VitaHalfRate() && vsync) {
+            while ((unsigned)sceDisplayGetVcount() - sLastPresentVcount < 2u) sceDisplayWaitVblankStart();
+        }
+        vita2d_swap_buffers();
+        sLastPresentVcount = (unsigned)sceDisplayGetVcount();
+    }
     TmcDiag_Stage(TMC_DIAG_DRAW, TmcSys_TimeUs() - tDraw);
 }
 

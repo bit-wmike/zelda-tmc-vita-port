@@ -1253,6 +1253,12 @@ static int Port_WidescreenFixedCanvasSubtask(void) {
            (gUI.nextToLoad == 3 && gFadeControl.active != 0);
 }
 
+/* Normal gameplay on the map (not the pause/menu canvases). Used by the Vita
+ * presenter to keep one zoom level while Full View is enabled. */
+int Port_Widescreen_GameplayCanvas(void) {
+    return gMain.task == TASK_GAME && !Port_WidescreenFixedCanvasSubtask();
+}
+
 static int Port_WidescreenFullViewUiOverlayActive(void) {
     if ((gMessage.state & MESSAGE_ACTIVE) != 0) {
         return 1;
@@ -1264,6 +1270,13 @@ static int Port_WidescreenFullViewUiOverlayActive(void) {
         &sWsEnterRoomBanner, gMain.task == TASK_GAME,
         gRoomControls.area, gRoomControls.room);
 }
+
+/* Full View size: 400x240 on the 3DS. On the Vita the room's own size
+ * capped to 400x240 (see Port_WidescreenFullViewInputs). */
+static int sWsFullViewW = 400;
+static int sWsFullViewH = 240;
+static inline int Port_WidescreenFullViewW(void) { return sWsFullViewW; }
+static inline int Port_WidescreenFullViewH(void) { return sWsFullViewH; }
 
 static Port3DSFullViewInputs Port_WidescreenFullViewInputs(void) {
     Port3DSFullViewInputs inputs;
@@ -1298,12 +1311,28 @@ static Port3DSFullViewInputs Port_WidescreenFullViewInputs(void) {
         inputs.contentHeight = (int)sWsContentHeightPx;
     }
 #ifdef TMC_VITA
-    /* Vita: outdoor Full View stays on through dialogue and the area-name
-     * banner; the PPU moves the box to the bottom centre of the 400x240 frame
+    {
+        /* Full View size = the room (or its painted part, until the content
+         * scan has covered it) capped to 400x240, in whole tiles so the HUD
+         * rows that Full View moves down still land exactly. */
+        int fitW = inputs.roomWidth < inputs.contentWidth ? inputs.roomWidth : inputs.contentWidth;
+        int fitH = inputs.roomHeight < inputs.contentHeight ? inputs.roomHeight : inputs.contentHeight;
+        if (fitW > 400) fitW = 400;
+        if (fitH > 240) fitH = 240;
+        fitW &= ~7;
+        fitH &= ~7;
+        inputs.fitWidth = fitW;
+        inputs.fitHeight = fitH;
+        if (fitW >= 240 && fitH >= 160) {
+            sWsFullViewW = fitW;
+            sWsFullViewH = fitH;
+        }
+    }
+    /* Vita: Full View (outdoors and in large interiors) stays on through
+     * dialogue and the area-name banner; the PPU moves the box to the bottom centre of the 400x240 frame
      * (ws_msg_vshift). Only GBA window effects still force the fallback.
      * Switching 400x240 <-> 266x160 for every textbox read as a zoom jump. */
-    if (inputs.areaIsExterior && inputs.uiOverlay &&
-        !Port3DSFullViewPolicy_NativeWindowActive(gScreen.lcd.displayControl)) {
+    if (inputs.uiOverlay && !Port3DSFullViewPolicy_NativeWindowActive(gScreen.lcd.displayControl)) {
         inputs.uiOverlay = 0;
     }
 #endif
@@ -1366,7 +1395,7 @@ static int Port_WidescreenBaseTargetViewWidth(void) {
 int Port_Widescreen_TargetViewWidth(void) {
     const Port3DSFullViewMode mode = Port_Widescreen_3DSViewMode();
     if (mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X) {
-        return MODE1_GBA_WIDTH < 400 ? MODE1_GBA_WIDTH : 400;
+        return MODE1_GBA_WIDTH < Port_WidescreenFullViewW() ? MODE1_GBA_WIDTH : Port_WidescreenFullViewW();
     }
     if (mode == PORT_3DS_FULL_VIEW_INTERIOR_2X) {
         return 200;
@@ -1482,7 +1511,7 @@ int Port_Widescreen_EffectiveViewWidth(void) {
     s32 eff;
     const Port3DSFullViewMode mode = Port_Widescreen_3DSViewMode();
     if (mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X) {
-        return 400;
+        return Port_WidescreenFullViewW();
     }
     if (mode == PORT_3DS_FULL_VIEW_INTERIOR_2X) {
         return 200;
@@ -1503,7 +1532,7 @@ int Port_Widescreen_MessageExtraLines(void) {
 int Port_Widescreen_EffectiveViewHeight(void) {
     switch (Port_Widescreen_3DSViewMode()) {
         case PORT_3DS_FULL_VIEW_OUTDOOR_1X:
-            return 240;
+            return Port_WidescreenFullViewH();
         case PORT_3DS_FULL_VIEW_INTERIOR_2X:
             return 120;
         default:
@@ -1524,7 +1553,7 @@ static Port3DSFullViewMode Port_WidescreenGameplayMode(void) {
 int Port_Widescreen_GameplayViewWidth(void) {
     switch (Port_WidescreenGameplayMode()) {
         case PORT_3DS_FULL_VIEW_OUTDOOR_1X:
-            return 400;
+            return Port_WidescreenFullViewW();
         case PORT_3DS_FULL_VIEW_INTERIOR_2X:
             return 200;
         default:
@@ -1535,7 +1564,7 @@ int Port_Widescreen_GameplayViewWidth(void) {
 int Port_Widescreen_GameplayViewHeight(void) {
     switch (Port_WidescreenGameplayMode()) {
         case PORT_3DS_FULL_VIEW_OUTDOOR_1X:
-            return 240;
+            return Port_WidescreenFullViewH();
         case PORT_3DS_FULL_VIEW_INTERIOR_2X:
             return 120;
         default:
@@ -1546,7 +1575,7 @@ int Port_Widescreen_GameplayViewHeight(void) {
 /* Single source of truth for the camera's rest x (see port_widescreen.h).
  * Clamp order (lo wins over hi) matches the GBA branches it replaces. */
 static int Port_WidescreenCameraRestXForMode(int target_x, Port3DSFullViewMode mode) {
-    int viewW = mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X ? 400 :
+    int viewW = mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X ? Port_WidescreenFullViewW() :
                 mode == PORT_3DS_FULL_VIEW_INTERIOR_2X ? 200 :
                 Port_WidescreenEstablishedViewWidth();
     int lo = (int)gRoomControls.origin_x;
@@ -1568,7 +1597,7 @@ static int Port_WidescreenCameraRestXForMode(int target_x, Port3DSFullViewMode m
 }
 
 static int Port_WidescreenCameraRestYForMode(int target_y, Port3DSFullViewMode mode) {
-    int viewH = mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X ? 240 :
+    int viewH = mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X ? Port_WidescreenFullViewH() :
                 mode == PORT_3DS_FULL_VIEW_INTERIOR_2X ? 120 :
                 160;
     int lo = (int)gRoomControls.origin_y;
@@ -1689,7 +1718,7 @@ int Port_Widescreen_ProducerViewWidth(void) {
      * the next tick adopts the new policy. */
     switch (Port_WidescreenGameplayMode()) {
         case PORT_3DS_FULL_VIEW_OUTDOOR_1X:
-            return 400;
+            return Port_WidescreenFullViewW();
         case PORT_3DS_FULL_VIEW_INTERIOR_2X:
             return 200;
         default:
@@ -1700,7 +1729,7 @@ int Port_Widescreen_ProducerViewWidth(void) {
 int Port_Widescreen_ProducerViewHeight(void) {
     switch (Port_WidescreenGameplayMode()) {
         case PORT_3DS_FULL_VIEW_OUTDOOR_1X:
-            return 240;
+            return Port_WidescreenFullViewH();
         case PORT_3DS_FULL_VIEW_INTERIOR_2X:
             return 120;
         default:
@@ -2121,6 +2150,9 @@ int Port_Widescreen_EffectiveViewWidth(void) {
     return 240;
 }
 int Port_Widescreen_MessageExtraLines(void) {
+    return 0;
+}
+int Port_Widescreen_GameplayCanvas(void) {
     return 0;
 }
 int Port_Widescreen_EffectiveViewHeight(void) {

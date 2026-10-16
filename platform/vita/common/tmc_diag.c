@@ -81,7 +81,9 @@ void TmcDiag_FrameDone(void) {
     if (sReportStart == 0) sReportStart = now;
     if (sLastFrameUs) {
         const uint64_t dt = now - sLastFrameUs;
-        if (dt > 20000u) ++sSlowFrames;
+        extern bool Port_Config_VitaHalfRate(void);
+        /* "slow" = longer than one display refresh plus margin (two in 30 fps mode). */
+        if (dt > (Port_Config_VitaHalfRate() ? 37000u : 20000u)) ++sSlowFrames;
         if (dt > sMaxInterval) sMaxInterval = (uint32_t)dt;
     }
     sLastFrameUs = now;

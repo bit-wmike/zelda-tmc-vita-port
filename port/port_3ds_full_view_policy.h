@@ -44,6 +44,10 @@ typedef struct Port3DSFullViewInputs {
     int roomHeight;
     int contentWidth;
     int contentHeight;
+    /* Vita only: Full View size for this room (room/content capped to
+     * 400x240, whole tiles). Filled by the caller; 0 when unknown. */
+    int fitWidth;
+    int fitHeight;
 } Port3DSFullViewInputs;
 
 /* Classify visual exterior scenes without trusting the mutable runtime area

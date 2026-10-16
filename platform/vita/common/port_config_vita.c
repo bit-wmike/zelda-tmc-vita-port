@@ -31,6 +31,7 @@ static _Atomic float sVolume = 1.0f;
 static _Atomic int sBackdrop;
 static _Atomic unsigned sTurboMultiplier = 5;
 static _Atomic bool sFullView;
+static _Atomic bool sHalfRate; /* frame_rate_30: present every 2nd frame */
 static unsigned sRebornMask;
 static _Atomic bool sRearTouch;
 static _Atomic bool sSideIcons = true;
@@ -170,6 +171,7 @@ static void SaveConfig(void) {
     fprintf(file, "panel_backdrop=%d\n", sBackdrop);
     fprintf(file, "turbo_multiplier=%u\n", sTurboMultiplier);
     fprintf(file, "full_view=%u\n", sFullView ? 1u : 0u);
+    fprintf(file, "frame_rate_30=%u\n", sHalfRate ? 1u : 0u);
     if (sHasRebornMask) fprintf(file, "reborn_mask=%u\n", sRebornMask);
     fprintf(file, "rear_touch=%u\n", sRearTouch ? 1u : 0u);
     fprintf(file, "side_icons=%u\n", sSideIcons ? 1u : 0u);
@@ -282,6 +284,7 @@ void Port_Config_Load(const char* path) {
             else if (strcmp(key, "panel_backdrop") == 0) sBackdrop = (int)strtol(value, NULL, 10);
             else if (strcmp(key, "turbo_multiplier") == 0) sTurboMultiplier = (unsigned)strtoul(value, NULL, 10);
             else if (strcmp(key, "full_view") == 0) sFullView = ParseBool(value);
+            else if (strcmp(key, "frame_rate_30") == 0) sHalfRate = ParseBool(value);
             else if (strcmp(key, "rear_touch") == 0) sRearTouch = ParseBool(value);
             else if (strcmp(key, "side_icons") == 0) sSideIcons = ParseBool(value);
             else if (strcmp(key, "render_threads") == 0) sRenderThreads = ParseBool(value);
@@ -530,6 +533,8 @@ bool Port_Config_3DSFullViewComboEnabled(void) {
 }
 bool Port_Config_VitaFullView(void) { return sFullView; }
 void Port_Config_SetVitaFullView(bool on) { sFullView = on; SaveConfig(); }
+bool Port_Config_VitaHalfRate(void) { return sHalfRate; }
+void Port_Config_SetVitaHalfRate(bool on) { sHalfRate = on; SaveConfig(); }
 
 bool Port_Config_VitaRearTouch(void) { return sRearTouch; }
 void Port_Config_SetVitaRearTouch(bool on) { sRearTouch = on; SaveConfig(); }
