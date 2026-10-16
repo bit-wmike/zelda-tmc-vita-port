@@ -37,9 +37,14 @@ void TmcDiag_LogSystemInfo(void) {
 }
 
 void TmcDiag_LogSettings(void) {
-    TmcDiag_Logf("[cfg] style=%d wide=%d fullview=%d colorfix=%d volume=%.2f rear_touch=%d turbo=%u reborn=0x%x\n",
+    /* Without a saved reborn_mask the built-in defaults apply (they are only
+     * written to the ini after the first toggle). */
+    extern unsigned Port_Reborn_GetMask(void);
+    const int hasReborn = Port_Config_HasRebornMask();
+    TmcDiag_Logf("[cfg] style=%d wide=%d fullview=%d colorfix=%d volume=%.2f rear_touch=%d turbo=%u reborn=0x%x%s\n",
                  Port_Config_Get3DSDisplayStyle(), (int)Port_Config_WidescreenEnabled(),
                  (int)Port_Config_VitaFullView(), (int)Port_Config_GetColorCorrection(),
                  (double)Port_Config_GetMasterVolume(), (int)Port_Config_VitaRearTouch(),
-                 Port_Config_GetTurboMultiplier(), Port_Config_GetRebornMask());
+                 Port_Config_GetTurboMultiplier(), hasReborn ? Port_Config_GetRebornMask() : Port_Reborn_GetMask(),
+                 hasReborn ? "" : " (default)");
 }

@@ -317,9 +317,21 @@ void MessageNoOverlap(u32 index, Entity* entity) {
     y = entity->y.HALF.HI;
     height = entity->z.HALF.HI;
 
+#if defined(PC_PORT) && defined(TMC_VITA)
+    {
+        /* Vita Full View 400x240 draws bottom boxes 80 lines lower (and Link
+         * stands ~40 lines lower on screen), so the "would overlap" line
+         * moves down by the same amount; otherwise every box went to the top. */
+        extern int Port_Widescreen_MessageExtraLines(void);
+        if (((y + height) - gRoomControls.scroll_y) > 0x58 + Port_Widescreen_MessageExtraLines()) {
+            gMessage.textWindowPosY = 1;
+        }
+    }
+#else
     if (((y + height) - gRoomControls.scroll_y) > 0x58) {
         gMessage.textWindowPosY = 1;
     }
+#endif
 }
 
 void MessageAtHeight(u32 index, u32 y) {

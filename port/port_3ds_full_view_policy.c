@@ -83,6 +83,13 @@ Port3DSFullViewMode Port3DSFullViewPolicy_Decide(const Port3DSFullViewInputs* in
         return PORT_3DS_FULL_VIEW_OUTDOOR_1X;
     }
 
+#ifdef TMC_VITA
+    /* The 200x120 interior crop exists to fill the 3DS 400x240 screen with an
+     * exact 2x scale. On the Vita it would show less than the 266x160
+     * widescreen view, at a bigger zoom, so interiors keep that view. */
+    if (reason != 0) *reason = PORT_3DS_FULL_VIEW_REASON_INTERIOR_BOUNDS;
+    return PORT_3DS_FULL_VIEW_FALLBACK;
+#endif
     if (inputs->roomWidth < PORT_3DS_INTERIOR_CROP_WIDTH ||
         inputs->roomHeight < PORT_3DS_INTERIOR_CROP_HEIGHT ||
         inputs->contentWidth < PORT_3DS_INTERIOR_CROP_WIDTH ||

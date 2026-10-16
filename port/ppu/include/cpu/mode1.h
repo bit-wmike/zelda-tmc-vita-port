@@ -127,6 +127,10 @@ extern int virtuappu_mode1_ws_msg_x0;    /* native box rect, inclusive */
 extern int virtuappu_mode1_ws_msg_x1;    /* native box rect, exclusive */
 extern int virtuappu_mode1_ws_msg_y0;    /* first box line             */
 extern int virtuappu_mode1_ws_msg_y1;    /* one past last box line     */
+/* Full View (400x240): extra downward move of the box in lines. 0 keeps the
+ * box on its native lines (the 266-px widescreen behaviour). Non-zero: the
+ * box is hidden on lines y0..y1 and drawn on y0+vshift..y1+vshift instead. */
+extern int virtuappu_mode1_ws_msg_vshift;
 
 enum {
     MODE1_IO_DISPCNT = 0x00,

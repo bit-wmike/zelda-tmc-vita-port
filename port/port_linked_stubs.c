@@ -1297,6 +1297,16 @@ static Port3DSFullViewInputs Port_WidescreenFullViewInputs(void) {
         inputs.contentWidth = (int)sWsContentPx;
         inputs.contentHeight = (int)sWsContentHeightPx;
     }
+#ifdef TMC_VITA
+    /* Vita: outdoor Full View stays on through dialogue and the area-name
+     * banner; the PPU moves the box to the bottom centre of the 400x240 frame
+     * (ws_msg_vshift). Only GBA window effects still force the fallback.
+     * Switching 400x240 <-> 266x160 for every textbox read as a zoom jump. */
+    if (inputs.areaIsExterior && inputs.uiOverlay &&
+        !Port3DSFullViewPolicy_NativeWindowActive(gScreen.lcd.displayControl)) {
+        inputs.uiOverlay = 0;
+    }
+#endif
     return inputs;
 }
 
@@ -1482,6 +1492,12 @@ int Port_Widescreen_EffectiveViewWidth(void) {
     }
     eff = Port_WidescreenEffectiveTarget();
     return eff > 240 ? (int)eff : 240;
+}
+
+/* Extra lines below the native 160-line canvas that a bottom textbox moves
+ * down by (see ws_msg_vshift): 80 in outdoor Full View, otherwise 0. */
+int Port_Widescreen_MessageExtraLines(void) {
+    return Port_Widescreen_3DSViewMode() == PORT_3DS_FULL_VIEW_OUTDOOR_1X ? Port_Widescreen_EffectiveViewHeight() - 160 : 0;
 }
 
 int Port_Widescreen_EffectiveViewHeight(void) {
@@ -1916,6 +1932,7 @@ void Port_Widescreen_UpdateShadows(void) {
     }
     virtuappu_mode1_ws_hud_right_anchor = 0;
     virtuappu_mode1_ws_msg_shift = 0;
+    virtuappu_mode1_ws_msg_vshift = 0;
     virtuappu_mode1_ws_full_view = 0;
     Port_WidescreenPublish3DSView(roomKey, PORT_3DS_FULL_VIEW_FALLBACK);
 
@@ -2062,6 +2079,11 @@ void Port_Widescreen_UpdateShadows(void) {
             virtuappu_mode1_ws_msg_y0 = y0;
             virtuappu_mode1_ws_msg_y1 = y1;
             virtuappu_mode1_ws_msg_shift = (Port_Widescreen_EffectiveViewWidth() - 240) / 2;
+            /* Full View 400x240: a box in the lower half of the native canvas
+             * keeps its distance to the bottom edge (moved down by the extra
+             * 80 lines, like the bottom HUD rows); upper boxes stay on top. */
+            if (y0 >= 80)
+                virtuappu_mode1_ws_msg_vshift = Port_Widescreen_MessageExtraLines();
         }
     } else if (enterRoomBannerActive) {
         /* The location-name banner bypasses gMessage and owns BG0 rows 5-6
@@ -2097,6 +2119,9 @@ int Port_Widescreen_IsActive(void) {
 }
 int Port_Widescreen_EffectiveViewWidth(void) {
     return 240;
+}
+int Port_Widescreen_MessageExtraLines(void) {
+    return 0;
 }
 int Port_Widescreen_EffectiveViewHeight(void) {
     return 160;

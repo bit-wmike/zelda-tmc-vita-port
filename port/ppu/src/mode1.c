@@ -52,6 +52,7 @@ int virtuappu_mode1_ws_msg_x0 = 0;
 int virtuappu_mode1_ws_msg_x1 = 0;
 int virtuappu_mode1_ws_msg_y0 = 0;
 int virtuappu_mode1_ws_msg_y1 = 0;
+int virtuappu_mode1_ws_msg_vshift = 0;
 
 typedef struct Mode1OAMAttr {
     uint16_t attr0;
@@ -1027,9 +1028,15 @@ static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t
                                    : MODE1_GBA_NATIVE_HEIGHT);
     const bool hud_right_anchor = bg_index == 0 && virtuappu_mode1_ws_hud_right_anchor != 0 &&
                                   frame_width > MODE1_GBA_BG_CLIP_X;
-    const bool message_line = bg_index == 0 && virtuappu_mode1_ws_msg_shift != 0 &&
-                              frame_width > MODE1_GBA_BG_CLIP_X && line >= virtuappu_mode1_ws_msg_y0 &&
+    const bool message_active = bg_index == 0 && virtuappu_mode1_ws_msg_shift != 0 &&
+                                frame_width > MODE1_GBA_BG_CLIP_X;
+    const int message_vshift = virtuappu_mode1_ws_msg_vshift;
+    const bool message_line = message_active && line >= virtuappu_mode1_ws_msg_y0 &&
                               line < virtuappu_mode1_ws_msg_y1;
+    /* Full View: the box is drawn message_vshift lines lower (second pass). */
+    const bool message_dst_line = message_active && message_vshift != 0 &&
+                                  line >= virtuappu_mode1_ws_msg_y0 + message_vshift &&
+                                  line < virtuappu_mode1_ws_msg_y1 + message_vshift;
     int render_width = map_width_tiles >= 64 || shadow_active || repeat_full_view_overlay
                            ? frame_width
                            : MODE1_GBA_BG_CLIP_X;
@@ -1037,7 +1044,7 @@ static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t
     if (render_width > frame_width) render_width = frame_width;
     if (native_bounds && (line < native_top || line >= native_bottom)) return;
 
-    if (!hud_right_anchor && !message_line) {
+    if (!hud_right_anchor && !message_line && !message_dst_line) {
         if (native_bounds) {
             const int native_width = native_right - native_left;
             mode1_render_text_bg_native_tokens(bg_index, line - native_top, bgcnt,
@@ -1053,19 +1060,26 @@ static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t
     const int scroll_x = virtuappu_mode1_io_read16((uint16_t)(MODE1_IO_BG0HOFS + bg_index * 4)) & 0x1FF;
     const int scroll_y = virtuappu_mode1_io_read16((uint16_t)(MODE1_IO_BG0VOFS + bg_index * 4)) & 0x1FF;
     const int sample_line = native_bounds ? line - native_top : line;
-    const int src_y = (sample_line + scroll_y) & (map_height_tiles * 8 - 1);
-    const int tile_row = src_y >> 3;
-    const int pixel_y = src_y & 7;
-    const int screen_block_y = tile_row >> 5;
-    const int local_row = tile_row & 31;
+    int src_y = (sample_line + scroll_y) & (map_height_tiles * 8 - 1);
+    int tile_row = src_y >> 3;
+    int pixel_y = src_y & 7;
+    int screen_block_y = tile_row >> 5;
+    int local_row = tile_row & 31;
     const int blocks_per_row = map_width_tiles >> 5;
     const int map_pixel_mask = map_width_tiles * 8 - 1;
     const int hud_right_destination = frame_width - (MODE1_GBA_BG_CLIP_X - MODE1_WS_HUD_RIGHT_NATIVE_X);
+    int x_begin = 0;
+    int x_end = render_width;
+    bool box_pass = false;
 
-    for (int x = 0; x < render_width; ++x) {
+next_pass:
+    for (int x = x_begin; x < x_end; ++x) {
         int sample_x = x;
-        if (message_line && x >= virtuappu_mode1_ws_msg_x0 + virtuappu_mode1_ws_msg_shift &&
-            x < virtuappu_mode1_ws_msg_x1 + virtuappu_mode1_ws_msg_shift) {
+        if (box_pass) {
+            sample_x = x - virtuappu_mode1_ws_msg_shift;
+        } else if (message_line && message_vshift == 0 &&
+                   x >= virtuappu_mode1_ws_msg_x0 + virtuappu_mode1_ws_msg_shift &&
+                   x < virtuappu_mode1_ws_msg_x1 + virtuappu_mode1_ws_msg_shift) {
             sample_x = x - virtuappu_mode1_ws_msg_shift;
         } else if (message_line && x >= virtuappu_mode1_ws_msg_x0 && x < virtuappu_mode1_ws_msg_x1) {
             continue;
@@ -1117,6 +1131,20 @@ static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t
             continue;
         }
         tokens[x] = (uint16_t)(palette_index + 1u);
+    }
+    if (message_dst_line && !box_pass) {
+        /* Second pass: the box's native lines, drawn shifted right and down. */
+        box_pass = true;
+        src_y = (line - message_vshift + scroll_y) & (map_height_tiles * 8 - 1);
+        tile_row = src_y >> 3;
+        pixel_y = src_y & 7;
+        screen_block_y = tile_row >> 5;
+        local_row = tile_row & 31;
+        x_begin = virtuappu_mode1_ws_msg_x0 + virtuappu_mode1_ws_msg_shift;
+        x_end = virtuappu_mode1_ws_msg_x1 + virtuappu_mode1_ws_msg_shift;
+        if (x_begin < 0) x_begin = 0;
+        if (x_end > frame_width) x_end = frame_width;
+        goto next_pass;
     }
     if (native_bounds) {
         memset(tokens, 0, (size_t)native_left * sizeof(*tokens));
@@ -1194,8 +1222,13 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
      * draw the box's native columns shifted right by ws_msg_shift and skip
      * them at their native position (see mode1.h). */
     const int ws_msg_shift = virtuappu_mode1_ws_msg_shift;
-    const bool ws_msg_line = (bg_index == 0) && (ws_msg_shift != 0) && (frame_width > MODE1_GBA_BG_CLIP_X) &&
-                             (line >= virtuappu_mode1_ws_msg_y0) && (line < virtuappu_mode1_ws_msg_y1);
+    const int ws_msg_vshift = virtuappu_mode1_ws_msg_vshift;
+    const bool ws_msg_active = (bg_index == 0) && (ws_msg_shift != 0) && (frame_width > MODE1_GBA_BG_CLIP_X);
+    const bool ws_msg_line = ws_msg_active && (line >= virtuappu_mode1_ws_msg_y0) && (line < virtuappu_mode1_ws_msg_y1);
+    /* Full View: the box is drawn ws_msg_vshift lines lower (second pass). */
+    const bool ws_msg_dst_line = ws_msg_active && ws_msg_vshift != 0 &&
+                                 (line >= virtuappu_mode1_ws_msg_y0 + ws_msg_vshift) &&
+                                 (line < virtuappu_mode1_ws_msg_y1 + ws_msg_vshift);
     const int ws_msg_x0 = virtuappu_mode1_ws_msg_x0;
     const int ws_msg_x1 = virtuappu_mode1_ws_msg_x1;
 
@@ -1209,7 +1242,7 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
      * instead of needlessly falling back on that inert flag. */
     if (MODE1_NATIVE_FAST_PATHS_ENABLED() && !bpp8 &&
         (!mosaic_on || (mode1_old3ds_profile && mosaic_h == 1 && mosaic_v == 1)) &&
-        !ws_hud_right_anchor && !ws_msg_line && render_min_x == 0) {
+        !ws_hud_right_anchor && !ws_msg_line && !ws_msg_dst_line && render_min_x == 0) {
         mode1_render_text_bg_native_4bpp(bg_index, char_base, screen_base, map_width_tiles, tile_row, pixel_y,
                                         scroll_x, render_max_x, priority, line_buffer, priority_buffer);
         return;
@@ -1304,7 +1337,7 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
     } else {
         for (x = render_min_x; x < render_max_x; ++x) {
             int sample_x = x;
-            if (ws_msg_line && x >= ws_msg_x0 + ws_msg_shift && x < ws_msg_x1 + ws_msg_shift) {
+            if (ws_msg_line && ws_msg_vshift == 0 && x >= ws_msg_x0 + ws_msg_shift && x < ws_msg_x1 + ws_msg_shift) {
                 /* Inside the shifted box: sample the box's native columns. */
                 sample_x = x - ws_msg_shift;
             } else if (ws_msg_line && x >= ws_msg_x0 && x < ws_msg_x1) {
@@ -1325,6 +1358,24 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
                 continue;
             }
             MODE1_BG_PIXEL(sample_x);
+        }
+    }
+    if (ws_msg_dst_line) {
+        /* Second pass: the box's native lines, drawn shifted right and down.
+         * Row variables are re-declared so MODE1_BG_PIXEL samples the source
+         * line; the tile cache is invalidated for the new row. */
+        const int box_src_y = (line - ws_msg_vshift + scroll_y) & (map_height_tiles * 8 - 1);
+        const int box_tile_row = box_src_y / 8;
+        const int pixel_y = box_src_y % 8;
+        const int screen_block_y = box_tile_row / 32;
+        const int local_row = box_tile_row % 32;
+        int box_x0 = ws_msg_x0 + ws_msg_shift;
+        int box_x1 = ws_msg_x1 + ws_msg_shift;
+        if (box_x0 < 0) box_x0 = 0;
+        if (box_x1 > frame_width) box_x1 = frame_width;
+        bg_cache_key = -1;
+        for (x = box_x0; x < box_x1; ++x) {
+            MODE1_BG_PIXEL(x - ws_msg_shift);
         }
     }
 #undef MODE1_BG_PIXEL

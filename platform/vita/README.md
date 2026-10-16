@@ -107,6 +107,12 @@ bitte beide Dateien mitschicken.
 
 ## Bekannte Einschränkungen
 
+- **Weitsicht (400×240, experimentell):** nur draußen. Innenräume bleiben in der normalen
+  Ansicht. Dialoge und Gebietsbanner bleiben in der Weitsicht (Textkasten unten mittig).
+  Beim Scrollen in einen anderen Raum schaltet sie kurz auf die normale Ansicht.
+  Die Weitsicht braucht etwa dreimal so viel Rechenzeit; in der Hyrule-Steppe sind es
+  dadurch nur etwa 40 FPS.
+
 - Teleport-Cheat nach Hyrule-Stadt während des Prologs ergibt einen weißen Bildschirm
   (auch in den anderen Ports so).
 - Der Build nutzt die USA-Basis mit Laufzeit-Erkennung der EU-ROM (wie der 3DS-Port).
