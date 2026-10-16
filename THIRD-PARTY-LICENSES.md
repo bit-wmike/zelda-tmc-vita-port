@@ -13,7 +13,7 @@ reproduced/redistributed here under their respective licenses.
 > **Copyleft note.** Project Picori is licensed **GPL-3.0**, and it both links
 > and derives from copyleft works:
 >
-> - **agbplay** (LGPL-3.0) is linked into the 3DS and desktop targets; complete corresponding source and build scripts are provided.
+> - **agbplay** (LGPL-3.0) is linked into the 3DS, PS Vita and desktop targets; complete corresponding source and build scripts are provided.
 > - The optional *Minish Cap Reborn*-parity quality-of-life features are
 >   **ported from** Admentus64/The-Minish-Cap-Reborn (GPL-3.0) — see
 >   [`docs/reborn-parity.md`](docs/reborn-parity.md) — and are likewise
@@ -23,7 +23,7 @@ reproduced/redistributed here under their respective licenses.
 
 | Component | Path | Upstream | License | Linkage |
 |-----------|------|----------|---------|---------|
-| **agbplay** (agbplay_core) | `libs/agbplay_core` | https://github.com/ipatix/agbplay | **LGPL-3.0** | Linked into the 3DS and desktop targets. See `libs/agbplay_core/LICENSE` and `libs/agbplay_core/COPYING.LESSER`; the complete source and build scripts support rebuilding with a modified library. |
+| **agbplay** (agbplay_core) | `libs/agbplay_core` | https://github.com/ipatix/agbplay | **LGPL-3.0** | Linked into the 3DS, PS Vita and desktop targets. See `libs/agbplay_core/LICENSE` and `libs/agbplay_core/COPYING.LESSER`; the complete source and build scripts support rebuilding with a modified library. |
 | **The Minish Cap Reborn** | QoL parity hooks (derived) | https://github.com/Admentus64/The-Minish-Cap-Reborn | **GPL-3.0** | QoL features ported from it (see `docs/reborn-parity.md`); distributed under GPL-3.0 with attribution. |
 
 ## Permissively-licensed components
@@ -94,6 +94,22 @@ this file and `LICENSE` accordingly.*
 (Unlicense) documents the Eenie, Stockwell bomb bag, and Wind Tribe roof fixes
 implemented natively in this port. See [Native European compatibility fixes](docs/eu-backport.md).
 The port does not redistribute its ROM patch or ROM-derived assets.
+
+## PS Vita port (`platform/vita/`)
+
+The Vita build links these VitaSDK components statically; all are compatible
+with the GPL-3.0 and are rebuilt from source by `platform/vita/tools/bootstrap_vitasdk.sh`.
+
+| Component | Upstream | License |
+|-----------|----------|---------|
+| vita2d (libvita2d) | https://github.com/xerpi/libvita2d | MIT |
+| vita-headers (system call stubs) | https://github.com/vitasdk/vita-headers | MIT |
+| newlib (Vita port) | https://github.com/vitasdk/newlib | BSD-style and other permissive newlib licenses |
+| pthread-embedded (Vita port) | https://github.com/vitasdk/pthread-embedded | LGPL-2.1 (Vita platform layer: MIT) |
+| GCC runtime (libgcc, libstdc++) | https://gcc.gnu.org | GPL-3.0 with the GCC Runtime Library Exception |
+
+pthread-embedded is LGPL-2.1: the complete source of this program and the build
+scripts are provided, so it can be relinked against a modified library.
 
 ## 3DS updater and idle card
 

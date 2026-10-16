@@ -28,7 +28,7 @@ Im selben Ordner liegen danach `tmcvita.ini` (Einstellungen), der Spielstand
 | Kreuz / Kreis | A / B |
 | L / R, Start, Select | wie GBA |
 | Steuerkreuz / linker Stick | Bewegen (Stick: 360° möglich) |
-| Dreieck / Viereck | Zusatz-Item 1 / 2 (im Pausemenü **Select halten** + Kreuz/Kreis zum Belegen) |
+| Dreieck / Viereck | Zusatz-Item 1 / 2 |
 | Rechter Stick ↑ (halten) | Turbo / Vorspulen |
 | Rechter Stick ↓ | Karte & Status (Overlay, Touch-bedienbar) |
 | Rechter Stick ← / → | Zusatz-Item 3 / 4 |
@@ -36,6 +36,11 @@ Im selben Ordner liegen danach `tmcvita.ini` (Einstellungen), der Spielstand
 | Touch oben links / oben rechts | Karte / Vita-Menü |
 | Rückseite oben links / rechts | Zusatz-Item 3 / 4 (muss im Menü eingeschaltet werden) |
 | PS TV: L2/R2, L3, R3 | Zusatz-Item 3/4, Karte, Menü |
+
+**Zusatz-Items belegen:** Pausemenü öffnen, ein Item markieren und die gewünschte
+Taste drücken (Dreieck, Viereck, rechter Stick ← / →, ein Rückseiten-Feld oder
+L2/R2 am PS TV). Alternativ Select halten + Kreuz/Kreis für Dreieck/Viereck.
+Die Belegung wird in `ux0:data/tmc/tmc.softslots` gespeichert.
 
 ## Vita-Menü
 
@@ -63,3 +68,47 @@ make TARGET=host            # 32-Bit-Linux-Testbuild (headless, für automatisch
 
 Der Host-Build läuft mit `build-host/tmc_host rom.gba <frames> <ausgabeordner> [skript]`
 und speichert Einzelbilder (`TMC_DUMP=100,200`). `TMC_BOOT=area,room,x,y` springt direkt ins Spiel.
+Das Skript enthält Zeilen `<frame> <tastenmaske-hex>` (Bits wie `TMC_KEY_*` in `common/tmc_platform.h`).
+
+Weitere Test-Schalter: `TMC_LANG=4` (Deutsch), `TMC_CHEAT_ALL=1`, `TMC_AUDIO_SYNC=1`
+(bit-genaues Audio), `TMC_QSAVE_AT` / `TMC_QLOAD_AT` (Quick-State), `TMC_OVERLAY_DUMP=<frame>`,
+`TMC_TEXT_DUMP=<textblock>` (Originaltexte aller Sprachen ausgeben),
+`TMC_MSG=0x2c25 TMC_MSG_AT=<frame>` (Textbox anzeigen).
+
+### Differentialtest (Vita-Adressen)
+
+Auf der Vita liegt der ganze Speicher über `0x80000000`. Code aus der GBA-Zeit, der
+Zeiger als Vorzeichenzahl prüft, verhält sich dort anders. `TARGET=armhost` (gelinkt
+auf `0x81000000` wie die Vita) und `TARGET=armlow` (normale Adressen) laufen unter
+`qemu-arm`; `tools/difftest.sh` spielt dieselben Eingaben in beiden ab und vergleicht
+jedes Bild, den Ton und den Spielstand:
+
+```sh
+make TARGET=armhost && make TARGET=armlow
+ROM=/pfad/rom.gba tools/difftest.sh walk 900 skript.txt TMC_AUDIO_SYNC=1 TMC_DUMP=300,400,500
+```
+
+Wichtig: Der Host-Compiler ist nachsichtiger als die Vita-Toolchain (GCC 15). Vor
+jeder Version deshalb immer auch `make TARGET=vita` bauen.
+
+## Eigene LiveArea-Bilder
+
+Bilder für Icon, LiveArea-Hintergrund und Startkachel kommen aus `sce_sys_local/`
+(`icon0.png` 128×128, `livearea/contents/bg.png` 840×500, `livearea/contents/startup.png`
+280×158, jeweils PNG mit 8-Bit-Palette). Der Ordner ist von Git ausgenommen, damit
+kein fremdes Artwork im Repo landet. Fehlt er, nimmt der Build die Platzhalter aus `sce_sys/`.
+
+## Log
+
+`ux0:data/tmc/log.txt` (vorheriger Start: `log_prev.txt`) enthält Version, Firmware,
+Modell, Speicher, Einstellungen, alle 5 Sekunden `[perf]` (FPS, Ruckler, Zeiten für
+Logik/Bildaufbau/Ausgabe, Audio) sowie Szenen- und Menü-Ereignisse. Bei Problemen
+bitte beide Dateien mitschicken.
+
+## Bekannte Einschränkungen
+
+- Teleport-Cheat nach Hyrule-Stadt während des Prologs ergibt einen weißen Bildschirm
+  (auch in den anderen Ports so).
+- Der Build nutzt die USA-Basis mit Laufzeit-Erkennung der EU-ROM (wie der 3DS-Port).
+  Einige kleine Details folgen noch der US-Fassung (z. B. eine Kachel in der
+  Portal-Nahaufnahme, 4 Pixel Startposition im Wald-Labyrinth des Königstals).

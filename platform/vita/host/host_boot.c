@@ -38,6 +38,39 @@ void TmcPlatform_FrameHook(void) {
         const char* e = getenv("TMC_BOOT");
         active = e && sscanf(e, "%x,%x,%x,%x", &a, &r, &x, &y) == 4;
     }
+    if (getenv("TMC_TEXT_DUMP") && sFrame == 120) {
+        /* TMC_TEXT_DUMP=bank: print every message of that text bank for all
+         * language slots as escaped bytes (used to match original wording). */
+        extern u32* gTranslations[];
+        const unsigned bank = (unsigned)strtoul(getenv("TMC_TEXT_DUMP"), NULL, 0);
+        for (unsigned lang = 0; lang < 7; ++lang) {
+            u32* t = gTranslations[lang];
+            if (!t || bank >= (t[0] >> 2)) continue;
+            u32* b = (u32*)((uintptr_t)t + t[bank]);
+            const unsigned n = b[0] >> 2;
+            for (unsigned i = 0; i < n; ++i) {
+                const u8* m = (const u8*)((uintptr_t)b + b[i]);
+                const unsigned len = i + 1 < n ? b[i + 1] - b[i] : 200;
+                fprintf(stderr, "[text] lang=%u msg=%02x: ", lang, i);
+                for (unsigned k = 0; k < len && k < 400; ++k) {
+                    if (m[k] >= 0x20 && m[k] < 0x7f && m[k] != '\\') fputc(m[k], stderr);
+                    else fprintf(stderr, "\\x%02x", m[k]);
+                }
+                fputc('\n', stderr);
+            }
+        }
+    }
+    if (getenv("TMC_MSG_AT") && getenv("TMC_MSG") && sFrame == (unsigned)atoi(getenv("TMC_MSG_AT"))) {
+        /* TMC_MSG=0x2c25 TMC_MSG_AT=frame: open that message box in game. */
+        extern void MessageFromTarget(u32 index);
+        if (getenv("TMC_MSG_NUM")) { /* fill text variable 1 like a shop price */
+            extern void sub_08057044(u32, struct_020227E8*, u32);
+            extern struct_020227E8 gUnk_020227E8[];
+            sub_08057044((u32)atoi(getenv("TMC_MSG_NUM")), gUnk_020227E8, 0x202020);
+        }
+        MessageFromTarget((u32)strtoul(getenv("TMC_MSG"), NULL, 0));
+        fprintf(stderr, "[test] message %s @%u\n", getenv("TMC_MSG"), sFrame);
+    }
     if (getenv("TMC_OAM_DUMP") && sFrame == (unsigned)atoi(getenv("TMC_OAM_DUMP"))) {
         extern u16 gOamMem[0x200];
         extern u8 gIoMem[0x400];

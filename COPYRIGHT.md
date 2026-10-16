@@ -30,3 +30,8 @@ Nintendo's intellectual property, which remains owned by Nintendo.
 Nintendo 3DS port maintenance modifications: 2026-10-02, Esteban PDN.
 Normal-save legacy metadata compatibility fix: 2026-10-04, Esteban PDN.
 Corresponding source: https://github.com/EstebanPdN/zelda-tmc-3ds
+
+PlayStation Vita port modifications (platform/vita/ and the shared-code fixes
+listed in its git history): since 2026-10-15, bit-wmike, written with the help
+of Claude (Anthropic).
+Corresponding source: https://github.com/bit-wmike/zelda-tmc-vita-port

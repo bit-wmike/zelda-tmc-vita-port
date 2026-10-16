@@ -1,5 +1,7 @@
 # The Minish Cap 3DS
 
+> This is the README of the original Nintendo 3DS port this PS Vita port is based on, kept for reference. The Vita port is described in the [main README](../README.md).
+
 <img width="1672" height="941" alt="The Minish Cap 3DS" src="https://github.com/user-attachments/assets/db99e777-12a2-4222-86c3-7c8f14062586" />
 
 Nintendo 3DS dual-screen port of *The Legend of Zelda: The Minish Cap*, based on the open-source Minish Cap decompilation, Project Picori, and the dual-screen Android port.
@@ -24,7 +26,7 @@ https://discord.gg/zy8BqH5ss
 
 * Native Nintendo 3DS port with full dual-screen support.
 * Supports both USA and European ROMs with automatic region detection.
-* Includes native [European gameplay backports](docs/eu-backport.md); no patched ROM is required.
+* Includes native [European gameplay backports](eu-backport.md); no patched ROM is required.
 * True widescreen gameplay on the 400x240 top screen, plus Original and Stretch display modes.
 * Bottom-screen interface with live map, dungeon information, quest status, touch item controls, and settings.
   The opening Picori legend keeps the bottom screen black; the overworld map
@@ -196,15 +198,15 @@ The build does not include or embed a ROM.
 ## License and Legal Notice
 
 Original port contributions are distributed under **GNU GPL v3.0 or later**.
-See [LICENSE](LICENSE) for the full terms and [COPYRIGHT.md](COPYRIGHT.md) for scope and attribution.
+See [LICENSE](../LICENSE) for the full terms and [COPYRIGHT.md](../COPYRIGHT.md) for scope and attribution.
 
 Each release's **Source code** download contains the corresponding application
 and library sources and build scripts. The 3DS build uses **agbplay** by ipatix
-and contributors under **LGPL v3.0**; its [notice](libs/agbplay_core/LICENSE)
-and [license text](libs/agbplay_core/COPYING.LESSER) are included. You may modify
+and contributors under **LGPL v3.0**; its [notice](../libs/agbplay_core/LICENSE)
+and [license text](../libs/agbplay_core/COPYING.LESSER) are included. You may modify
 that library and rebuild the CIA or 3DSX with the documented build command.
 
-Third-party components retain their respective licenses as listed in [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+Third-party components retain their respective licenses as listed in [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md).
 
 Nintendo owns *The Legend of Zelda*, *The Minish Cap*, and all associated game content.
 
