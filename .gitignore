@@ -188,3 +188,4 @@ keystore.properties
 !platform/3ds/tools/gen_triforce.py
 !platform/3ds/tests/run-update-tests.py
 platform/vita/build-*/
+platform/vita/sce_sys_local/

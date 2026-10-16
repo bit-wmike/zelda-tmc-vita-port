@@ -158,18 +158,22 @@ FORCE:
 TITLE_ID := TMCV00001
 TITLE := The Minish Cap
 VPK := $(BUILD)/TheMinishCap_Vita_$(shell cat VERSION).vpk
+# Optional personal LiveArea artwork (icon0.png, livearea/contents/bg.png,
+# startup.png) in sce_sys_local/ - git-ignored, so third-party art never lands
+# in the repository. Missing files fall back to the placeholders in sce_sys/.
+ART = $(if $(wildcard sce_sys_local/$(1)),sce_sys_local/$(1),sce_sys/$(1))
 
 vpk: $(VPK)
 
-$(VPK): $(OUT) sce_sys/icon0.png sce_sys/livearea/contents/template.xml VERSION
+$(VPK): $(OUT) $(call ART,icon0.png) $(call ART,livearea/contents/bg.png) $(call ART,livearea/contents/startup.png) sce_sys/livearea/contents/template.xml VERSION
 	$(VITASDK)/bin/vita-elf-create $(OUT) $(BUILD)/tmc.velf
 	$(VITASDK)/bin/vita-make-fself -s -c $(BUILD)/tmc.velf $(BUILD)/eboot.bin
 	$(VITASDK)/bin/vita-mksfoex -s TITLE_ID=$(TITLE_ID) -s APP_VER=01.00 \
 	    -d ATTRIBUTE2=12 "$(TITLE)" $(BUILD)/param.sfo
 	$(VITASDK)/bin/vita-pack-vpk -s $(BUILD)/param.sfo -b $(BUILD)/eboot.bin \
-	    -a sce_sys/icon0.png=sce_sys/icon0.png \
-	    -a sce_sys/livearea/contents/bg.png=sce_sys/livearea/contents/bg.png \
-	    -a sce_sys/livearea/contents/startup.png=sce_sys/livearea/contents/startup.png \
+	    -a $(call ART,icon0.png)=sce_sys/icon0.png \
+	    -a $(call ART,livearea/contents/bg.png)=sce_sys/livearea/contents/bg.png \
+	    -a $(call ART,livearea/contents/startup.png)=sce_sys/livearea/contents/startup.png \
 	    -a sce_sys/livearea/contents/template.xml=sce_sys/livearea/contents/template.xml \
 	    $@
 
