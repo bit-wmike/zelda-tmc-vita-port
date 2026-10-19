@@ -91,6 +91,9 @@ extern uint8_t virtuappu_mode1_ws_shadow_cols[MODE1_GBA_BG_COUNT];
 extern uint8_t virtuappu_mode1_ws_shadow_stride[MODE1_GBA_BG_COUNT];
 extern int virtuappu_mode1_ws_full_view;
 extern bool virtuappu_mode1_bg3_hdma_native_bounds;
+/* Vita: draw an HDMA-driven BG3 overlay over the whole frame (stretched
+ * per-line values) instead of clipping it to the GBA rectangle. */
+extern bool virtuappu_mode1_bg3_hdma_extend;
 /* Repeat a known seamless BG3 overlay beyond the native 240px canvas. */
 extern bool virtuappu_mode1_bg3_repeat;
 

@@ -162,7 +162,11 @@ static void GameTask_Main(void) {
     /* Reconcile a config/task/transition change before this tick produces
      * any world or UI geometry. UpdateScroll repeats the check after entity
      * logic for transitions that begin during the tick. */
-    (void)Port_Widescreen_PrepareGameplayCamera();
+    if (Port_Widescreen_PrepareGameplayCamera() && gMain.substate == GAMEMAIN_MINISHPORTAL) {
+        /* The portal close-up runs no map update of its own: refill the BG
+         * buffers for the camera the view change just recentred. */
+        UpdateScrollVram();
+    }
 #endif
     sStates[gMain.substate]();
 }

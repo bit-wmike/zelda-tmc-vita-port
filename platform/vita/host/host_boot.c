@@ -35,6 +35,15 @@ void TmcPlatform_FrameHook(void) {
         if (qs && sFrame == (unsigned)atoi(qs)) { fprintf(stderr, "[test] quick save @%u\n", sFrame); TmcVitaUi_TestQuickSave(); }
         if (ql && sFrame == (unsigned)atoi(ql)) { fprintf(stderr, "[test] quick load @%u\n", sFrame); TmcVitaUi_TestQuickLoad(); }
     }
+    if (getenv("TMC_WARP_AT")) {
+        /* TMC_WARP_AT="frame:area,room,x,y" (hex like TMC_BOOT): one debug
+         * warp at that frame, e.g. after TMC_QLOAD_AT restored a player state. */
+        unsigned f, wa, wr, wx, wy;
+        if (sscanf(getenv("TMC_WARP_AT"), "%u:%x,%x,%x,%x", &f, &wa, &wr, &wx, &wy) == 5 && sFrame == f) {
+            fprintf(stderr, "[test] warp @%u\n", sFrame);
+            Port_DebugAction_Warp((unsigned char)wa, (unsigned char)wr, (unsigned short)wx, (unsigned short)wy, 0);
+        }
+    }
     if (active < 0) {
         const char* e = getenv("TMC_BOOT");
         active = e && sscanf(e, "%x,%x,%x,%x", &a, &r, &x, &y) == 4;
@@ -87,6 +96,20 @@ void TmcPlatform_FrameHook(void) {
             if (!h) continue;
             for (int room = 0; room < 64 && h[room].map_x != 0xffff; ++room)
                 fprintf(stderr, "[room] %02x %02x %ux%u\n", area, room, h[room].pixel_width, h[room].pixel_height);
+        }
+    }
+    if (getenv("TMC_BG0_DUMP") && sFrame == (unsigned)atoi(getenv("TMC_BG0_DUMP"))) {
+        /* BG0 screenblock as hex tile ids (rows 0..31) plus its scroll. */
+        extern u8 gIoMem[0x400];
+        extern u8 gVram[];
+        const unsigned cnt = gIoMem[8] | (gIoMem[9] << 8);
+        const u16* map = (const u16*)(gVram + ((cnt >> 8) & 0x1f) * 0x800);
+        fprintf(stderr, "[bg0] cnt=%04x hofs=%d vofs=%d dispcnt=%04x\n", cnt, gIoMem[0x10] | (gIoMem[0x11] << 8),
+                gIoMem[0x12] | (gIoMem[0x13] << 8), gIoMem[0] | (gIoMem[1] << 8));
+        for (int r = 0; r < 32; ++r) {
+            fprintf(stderr, "[bg0] %2d:", r);
+            for (int c = 0; c < 32; ++c) fprintf(stderr, " %03x", map[r * 32 + c] & 0x3ff);
+            fputc('\n', stderr);
         }
     }
     if (getenv("TMC_OAM_DUMP") && sFrame == (unsigned)atoi(getenv("TMC_OAM_DUMP"))) {
@@ -148,6 +171,60 @@ void TmcPlatform_FrameHook(void) {
         for (int i = 0; i < W * H; ++i) { unsigned char c[3] = { px[i] & 255, (px[i] >> 8) & 255, (px[i] >> 16) & 255 }; fwrite(c, 1, 3, f); }
         fclose(f);
         fprintf(stderr, "[boot] overlay dumped (inGame=%d)\n", snap.inGame);
+        if (getenv("TMC_DETAIL_DUMP")) {
+            /* The stitched detail map plus its region plane (0xFF = no region). */
+            extern int Port_SecondScreenWorldMap_GetDetailMap(const uint32_t**, const uint8_t**, int32_t*, int32_t*);
+            const uint32_t* img;
+            const uint8_t* reg;
+            int32_t dw, dh;
+            if (Port_SecondScreenWorldMap_GetDetailMap(&img, &reg, &dw, &dh)) {
+                FILE* g = fopen("detail.ppm", "wb");
+                fprintf(g, "P6\n%d %d\n255\n", dw, dh * 2);
+                for (int i = 0; i < dw * dh; ++i) {
+                    unsigned char c[3] = { img[i] & 255, (img[i] >> 8) & 255, (img[i] >> 16) & 255 };
+                    if ((img[i] >> 24) == 0) c[0] = 255, c[1] = 0, c[2] = 255;
+                    fwrite(c, 1, 3, g);
+                }
+                for (int i = 0; i < dw * dh; ++i) {
+                    unsigned char c[3] = { (unsigned char)(reg[i] * 37), (unsigned char)(reg[i] * 91), (unsigned char)(reg[i] * 53) };
+                    if (reg[i] == 0xFF) c[0] = c[1] = c[2] = 0;
+                    fwrite(c, 1, 3, g);
+                }
+                fclose(g);
+            }
+        }
+        /* TMC_OVERLAY_SEQ="t:x,y;d:dx,dy;p:n;..." : taps (t), drags (d, by dx,dy in
+         * screen px), plain paints (p, n frames); each step writes overlay_<i>.ppm. */
+        if (getenv("TMC_OVERLAY_SEQ")) {
+            extern void Port_SecondScreen_OnTap(int x, int y, int longPress);
+            extern void TmcVitaUi_TestOverlayDrag(int dx, int dy);
+            char seq[512];
+            snprintf(seq, sizeof(seq), "%s", getenv("TMC_OVERLAY_SEQ"));
+            int step = 0;
+            uint32_t tick = sFrame + 3;
+            for (char* tok = strtok(seq, ";"); tok; tok = strtok(NULL, ";"), ++step) {
+                int a = 0, b = 0;
+                if (tok[0] == 't' && sscanf(tok + 2, "%d,%d", &a, &b) == 2) Port_SecondScreen_OnTap(a, b, 0);
+                else if (tok[0] == 'd' && sscanf(tok + 2, "%d,%d", &a, &b) == 2) TmcVitaUi_TestOverlayDrag(a, b);
+                int frames = (tok[0] == 'p' && sscanf(tok + 2, "%d", &a) == 1) ? a : 12;
+                for (int t = 0; t < frames; ++t) Port_SecondScreen_PaintInto(px, W, H, W, &snap, tick++);
+                char name[64];
+                snprintf(name, sizeof(name), "overlay_%d.ppm", step);
+                FILE* g = fopen(name, "wb");
+                fprintf(g, "P6\n%d %d\n255\n", W, H);
+                for (int i = 0; i < W * H; ++i) { unsigned char c[3] = { px[i] & 255, (px[i] >> 8) & 255, (px[i] >> 16) & 255 }; fwrite(c, 1, 3, g); }
+                fclose(g);
+            }
+        }
+    }
+    if (warped && getenv("TMC_GLOBAL_FLAG")) {
+        /* TMC_GLOBAL_FLAG=<id>: set one global story flag (e.g. 0x14 = met Ezlo). */
+        static int flagSet;
+        if (!flagSet) {
+            extern void SetGlobalFlag(u32);
+            SetGlobalFlag((u32)strtoul(getenv("TMC_GLOBAL_FLAG"), NULL, 0));
+            flagSet = 1;
+        }
     }
     if (warped && !cheated && getenv("TMC_CHEAT_ALL")) {
         Port_DebugAction_GiveAllItems();

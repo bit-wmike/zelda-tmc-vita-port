@@ -25,6 +25,7 @@
 #include "area.h"
 #include "room.h"
 #include "screen.h"
+#include "player.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -63,8 +64,17 @@ int TmcVita_KeepZoom(void) {
     return Port_Config_VitaFullView() && Port_Widescreen_GameplayCanvas();
 }
 
+/* The port derives the Breitbild view width from the window (w * 160 / h).
+ * The Vita shows at most TMC_VITA_WIDE_MAX columns, so publish a window of
+ * exactly that aspect: camera, HUD anchors and the frame then agree (960x544
+ * would ask for 282 columns: the R prompt 16 px past the right edge and Link
+ * 8 px off centre). */
+static void PublishWideWindow(void) {
+    Port_Widescreen_SetWindowPixels((TMC_VITA_WIDE_MAX * 544 + 159) / 160, 544);
+}
+
 static int WideFrameWidth(void) {
-    Port_Widescreen_SetWindowPixels(960, 544);
+    PublishWideWindow();
     if (Port_Widescreen_IsActive() && Port_Widescreen_ShadowsLive()) {
         int width = Port_Widescreen_EffectiveViewWidth();
         if (width > MODE1_GBA_WIDTH) width = MODE1_GBA_WIDTH;
@@ -122,9 +132,11 @@ void Port_PPU_Init(SDL_Window* window) {
     /* Test host: TMC_OLD3DS_PROFILE=1 selects the Old 3DS fast paths. */
     virtuappu_mode1_set_old3ds_profile(getenv("TMC_OLD3DS_PROFILE") != NULL);
 #endif
+    /* Forest light/fog and steam cover the whole Full View frame. */
+    virtuappu_mode1_bg3_hdma_extend = true;
     sColorCorrection = Port_Config_GetColorCorrection();
     virtuappu_mode1_set_color_correction(sColorCorrection);
-    Port_Widescreen_SetWindowPixels(960, 544);
+    PublishWideWindow();
     virtuappu_registers.frame_width = GBA_NATIVE_W;
     virtuappu_registers.frame_height = GBA_NATIVE_H;
     virtuappu_registers.frame_pitch = FRAME_PITCH;
@@ -161,6 +173,24 @@ void Port_PPU_PresentFrame(void) {
                                  gScreen.bg3.control == 0x1e05;
     virtuappu_mode1_bg3_hdma_native_bounds =
         port_hdma_dest_overlaps(gIoMem + MODE1_IO_BG3HOFS, gIoMem + MODE1_IO_BG3VOFS + 2) != 0;
+#ifndef __vita__
+    if (getenv("TMC_MSGBAND_LOG") && virtuappu_mode1_ws_msg_shift != 0 && (sFrameCount % 10) == 0) {
+        char line[200];
+        snprintf(line, sizeof(line), "[msgband] bg0vofs=%d bg0hofs=%d f=%u x=%d..%d y=%d..%d shift=%d vshift=%d frame=%dx%d\n",
+                 gIoMem[0x12] | (gIoMem[0x13] << 8), gIoMem[0x10] | (gIoMem[0x11] << 8), sFrameCount,
+                 virtuappu_mode1_ws_msg_x0, virtuappu_mode1_ws_msg_x1, virtuappu_mode1_ws_msg_y0,
+                 virtuappu_mode1_ws_msg_y1, virtuappu_mode1_ws_msg_shift, virtuappu_mode1_ws_msg_vshift, sFrameWidth,
+                 sFrameHeight);
+        TmcSys_Log(line);
+    }
+    if (virtuappu_mode1_bg3_hdma_native_bounds && getenv("TMC_BG3HDMA_LOG") && (sFrameCount % 30) == 0) {
+        char line[160];
+        snprintf(line, sizeof(line), "[bg3hdma] f=%u area=%x room=%x pos=%d,%d w=%d h=%d\n", sFrameCount,
+                 gRoomControls.area, gRoomControls.room, gPlayerEntity.base.x.HALF.HI - gRoomControls.origin_x,
+                 gPlayerEntity.base.y.HALF.HI - gRoomControls.origin_y, sFrameWidth, sFrameHeight);
+        TmcSys_Log(line);
+    }
+#endif
 
 #ifndef __vita__
     /* Test host: TMC_PPU_TIMING=<first frame> sums the renderer's thread CPU
@@ -209,6 +239,17 @@ void Port_PPU_PresentFrame(void) {
 
     int w = sFrameWidth;
     int h = sFrameHeight;
+#ifndef __vita__
+    if (getenv("TMC_VIEW_LOG")) {
+        /* Test host: what the Vita presenter would do with this frame. */
+        char line[200];
+        snprintf(line, sizeof(line), "[view] f=%u %dx%d keepzoom=%d substate=%d ui=%d/%d scroll=%d,%d cam=%d\n",
+                 sFrameCount, w, h, TmcVita_KeepZoom(), gMain.substate, gUI.nextToLoad, gUI.lastState,
+                 gRoomControls.scroll_x - gRoomControls.origin_x, gRoomControls.scroll_y - gRoomControls.origin_y,
+                 gRoomControls.camera_target != NULL);
+        TmcSys_Log(line);
+    }
+#endif
     TmcVita_BeforePresent(sFrame, &w, &h, FRAME_PITCH);
     TmcVideo_Present(sFrame, w, h, FRAME_PITCH, !Platform3DS_TurboHeld());
     TmcDiag_FrameDone();

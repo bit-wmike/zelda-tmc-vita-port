@@ -21,6 +21,8 @@ and runs as native ARM code on the Vita.
   400×240 at one constant zoom level, with an optional steady 30 fps mode.
 - Display styles: Smooth, Sharp (crisp pixels without shimmer) and Pixel Perfect.
 - Map and status overlay (the 3DS bottom screen), usable with the front touch screen.
+  The world map zooms into one stitched map of Hyrule (L/R or the ZOOM chip) that you
+  move with a finger, the D-pad or the left stick.
 - Extra item slots on △ / □ and the right stick; optional rear touch.
 - Turbo / fast-forward, text fast-forward, autosave.
 - *Minish Cap Reborn* comfort options (Pegasus Boots on L+R, Ocarina shortcut,

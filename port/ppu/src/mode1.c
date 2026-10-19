@@ -49,6 +49,7 @@ uint8_t virtuappu_mode1_ws_shadow_stride[MODE1_GBA_BG_COUNT] = {
 };
 int virtuappu_mode1_ws_full_view = 0;
 bool virtuappu_mode1_bg3_hdma_native_bounds = false;
+bool virtuappu_mode1_bg3_hdma_extend = false;
 bool virtuappu_mode1_bg3_repeat = false;
 int virtuappu_mode1_ws_hud_right_anchor = 0;
 /* Widescreen message-box centering (see mode1.h). All zero = inactive. */
@@ -784,6 +785,14 @@ static inline bool mode1_bg3_native_bounds_active(void) {
             mode1_frame_height > MODE1_GBA_NATIVE_HEIGHT);
 }
 
+/* Extended mode (Vita): instead of clipping an HDMA-driven BG3 overlay
+ * (forest light/fog, steam) to the centred GBA rectangle, draw it over the
+ * whole frame. Its 160 per-line scroll values are stretched over the frame
+ * height, and the texture keeps its GBA alignment in the centre. */
+static inline bool mode1_bg3_hdma_extend_active(void) {
+    return virtuappu_mode1_bg3_hdma_extend && mode1_bg3_native_bounds_active();
+}
+
 static inline int mode1_bg3_native_top(void) {
     return mode1_frame_height > MODE1_GBA_NATIVE_HEIGHT
                ? (mode1_frame_height - MODE1_GBA_NATIVE_HEIGHT) / 2
@@ -802,6 +811,22 @@ static inline int mode1_pre_line_source_for_output(int line) {
                    : -1;
     }
     return line < MODE1_GBA_NATIVE_HEIGHT ? line : -1;
+}
+
+/* Runs the HDMA pre-line callback for output `line`. Each source line is
+ * emitted exactly once and in order; *next_source tracks the extended mode. */
+static inline void mode1_run_pre_line_callback(int line, int* next_source) {
+    if (mode1_bg3_hdma_extend_active()) {
+        int source = mode1_frame_height > 0 ? (line * MODE1_GBA_NATIVE_HEIGHT) / mode1_frame_height : line;
+        if (source >= MODE1_GBA_NATIVE_HEIGHT) source = MODE1_GBA_NATIVE_HEIGHT - 1;
+        while (*next_source <= source) {
+            virtuappu_mode1_pre_line_callback(*next_source);
+            ++*next_source;
+        }
+        return;
+    }
+    const int source_line = mode1_pre_line_source_for_output(line);
+    if (source_line >= 0) virtuappu_mode1_pre_line_callback(source_line);
 }
 
 static inline bool mode1_shadow_geometry_for_bg(int bg_index, int* cols, int* stride) {
@@ -1179,6 +1204,12 @@ static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t
                            : MODE1_GBA_BG_CLIP_X;
     if (hud_right_anchor || message_line) render_width = frame_width;
     if (render_width > frame_width) render_width = frame_width;
+    if (native_bounds && mode1_bg3_hdma_extend_active()) {
+        /* Extended overlay: whole frame, GBA texture alignment in the centre. */
+        mode1_render_text_bg_native_tokens_range(bg_index, line - native_top, bgcnt, 0, frame_width, native_left,
+                                                 tokens);
+        return;
+    }
     if (native_bounds && (line < native_top || line >= native_bottom)) return;
 
     if (hud_right_anchor && !message_line && !message_dst_line && !native_bounds) {
@@ -1345,6 +1376,7 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
                               (mode1_frame_height < MODE1_GBA_NATIVE_HEIGHT
                                    ? mode1_frame_height
                                    : MODE1_GBA_NATIVE_HEIGHT);
+    const bool bg3_extend = native_bounds && mode1_bg3_hdma_extend_active();
     const int sample_line = native_bounds ? line - native_top : line;
     const int eff_line = (mosaic_v == 1) ? sample_line : (sample_line / mosaic_v) * mosaic_v;
     const int src_y = (eff_line + scroll_y) & (map_height_tiles * 8 - 1);
@@ -1367,7 +1399,9 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
     if (render_max_x > frame_width)
         render_max_x = frame_width;
     int render_min_x = 0;
-    if (native_bounds) {
+    if (bg3_extend) {
+        render_max_x = frame_width; /* whole frame, sampled at x - native_left */
+    } else if (native_bounds) {
         if (line < native_top || line >= native_bottom) return;
         render_min_x = native_left;
         render_max_x = native_right;
@@ -1399,8 +1433,16 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
      * TMC leaves BG1's enable bit set in normal field/castle gameplay while
      * MOSAIC itself is zero, so key the fast path on the effective dimensions
      * instead of needlessly falling back on that inert flag. */
+    if (bg3_extend && MODE1_NATIVE_FAST_PATHS_ENABLED() && !bpp8 &&
+        (!mosaic_on || (mode1_old3ds_profile && mosaic_h == 1 && mosaic_v == 1))) {
+        mode1_render_text_bg_native_4bpp_range(bg_index, char_base, screen_base, map_width_tiles, tile_row, pixel_y,
+                                               scroll_x, 0, frame_width, native_left, priority, line_buffer,
+                                               priority_buffer);
+        return;
+    }
     if (MODE1_NATIVE_FAST_PATHS_ENABLED() && !bpp8 &&
         (!mosaic_on || (mode1_old3ds_profile && mosaic_h == 1 && mosaic_v == 1)) &&
+        !native_bounds &&
         !ws_hud_right_anchor && !ws_msg_line && !ws_msg_dst_line && render_min_x == 0) {
         mode1_render_text_bg_native_4bpp(bg_index, char_base, screen_base, map_width_tiles, tile_row, pixel_y,
                                         scroll_x, render_max_x, priority, line_buffer, priority_buffer);
@@ -3346,10 +3388,10 @@ int virtuappu_mode1_prepare_frame(const PPUMemory* ppu, uint8_t* io_per_line, ui
     }
 
     const bool per_line_io = (virtuappu_mode1_pre_line_callback != NULL);
+    int next_source_line = 0;
     for (line = 0; line < frame_height; ++line) {
         if (per_line_io) {
-            const int source_line = mode1_pre_line_source_for_output(line);
-            if (source_line >= 0) virtuappu_mode1_pre_line_callback(source_line);
+            mode1_run_pre_line_callback(line, &next_source_line);
         }
         /* Snapshot IO for the GPU. When there is no per-line HDMA callback,
          * io_mem is identical on every scanline, so snapshot ONLY row 0 — the
@@ -3700,10 +3742,10 @@ void virtuappu_mode1_render_frame(const PPUMemory* ppu) {
      * critical path and point every thread's override straight at io_mem in the
      * parallel loop below. Byte-exact: each snapshot equalled io_mem anyway. */
     const bool per_line_io = (virtuappu_mode1_pre_line_callback != NULL);
+    int next_source_line = 0;
     for (line = 0; line < frame_height; ++line) {
         if (per_line_io) {
-            const int source_line = mode1_pre_line_source_for_output(line);
-            if (source_line >= 0) virtuappu_mode1_pre_line_callback(source_line);
+            mode1_run_pre_line_callback(line, &next_source_line);
             /* Display rendering only reads registers through BLDY (0x54). */
             memcpy(io_snapshots[line], mode1_memory.io_mem, MODE1_RENDER_IO_SNAPSHOT_SIZE);
             per_line_dispcnt[line] =

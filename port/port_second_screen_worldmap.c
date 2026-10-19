@@ -899,6 +899,133 @@ int Port_SecondScreenWorldMap_DrawRegion(uint32_t* pixels, int32_t bufW, int32_t
     return 1;
 }
 
+/* --- Detail map (Vita) ---------------------------------------------------
+ *
+ * All enlarged region maps share one scale (100 / 0x23A of an overworld
+ * pixel) and each sits at its own overworld origin, so together they form
+ * one big map of Hyrule at the enlarged-map resolution. Built once: the
+ * regions are painted in reverse table order so the first row wins where
+ * two rects overlap (the game's own GetOverworldLocation rule), and a second
+ * plane records which region every pixel belongs to, so the caller can
+ * cover the ones the player hasn't uncovered yet. */
+static uint32_t* volatile sDetailImage;
+static uint8_t* sDetailRegion;
+static int32_t sDetailW, sDetailH, sDetailX0, sDetailY0;
+
+/* One pass of the seam fill: `lines` lines of `len` pixels, `step` apart
+ * along a line and `lineStep` apart between lines. */
+static void FillSeams(uint32_t* img, uint8_t* reg, int32_t len, size_t step, size_t lineStep, int32_t lines) {
+    enum { SEAM_MAX = 8 };
+    for (int32_t line = 0; line < lines; line++) {
+        const size_t base = (size_t)line * lineStep;
+        int32_t i = 0;
+        while (i < len) {
+            if ((img[base + (size_t)i * step] >> 24) != 0) {
+                i++;
+                continue;
+            }
+            const int32_t start = i;
+            while (i < len && (img[base + (size_t)i * step] >> 24) == 0) i++;
+            if (start == 0 || i == len || i - start > SEAM_MAX) continue;
+            for (int32_t k = start; k < i; k++) {
+                const size_t from = base + (size_t)(k - start < i - k ? start - 1 : i) * step;
+                img[base + (size_t)k * step] = img[from];
+                reg[base + (size_t)k * step] = reg[from];
+            }
+        }
+    }
+}
+
+static int BuildDetailMap(void) {
+    RegionGeometry g[WORLDMAP_REGION_COUNT];
+    int32_t minX = 0x7fffffff, minY = 0x7fffffff, maxX = -0x7fffffff, maxY = -0x7fffffff;
+    int32_t region, order[WORLDMAP_REGION_COUNT], n = 0;
+    const OverworldLocation* loc;
+
+    for (loc = gOverworldLocations; loc->minX != 0xFF && n < WORLDMAP_REGION_COUNT; loc++) {
+        order[n++] = loc->windcrestId;
+    }
+    for (int32_t i = 0; i < n; i++) {
+        int32_t w, h;
+        region = order[i];
+        if (!GetRegionGeometry(region, &g[region]) || RegionImage(region, &w, &h) == NULL) {
+            return 0;
+        }
+        const int32_t ax = g[region].worldX * REGION_SCALE_NUM / REGION_SCALE_DEN;
+        const int32_t ay = g[region].worldY * REGION_SCALE_NUM / REGION_SCALE_DEN;
+        if (ax < minX) minX = ax;
+        if (ay < minY) minY = ay;
+        if (ax + w > maxX) maxX = ax + w;
+        if (ay + h > maxY) maxY = ay + h;
+    }
+    if (n == 0 || maxX <= minX || maxY <= minY) {
+        return 0;
+    }
+    const int32_t W = maxX - minX, H = maxY - minY;
+    uint32_t* img = (uint32_t*)calloc((size_t)W * H, sizeof(uint32_t));
+    uint8_t* reg = (uint8_t*)malloc((size_t)W * H);
+    if (img == NULL || reg == NULL) {
+        free(img);
+        free(reg);
+        return 0;
+    }
+    memset(reg, 0xFF, (size_t)W * H);
+    for (int32_t i = n - 1; i >= 0; i--) {
+        int32_t w, h;
+        region = order[i];
+        const uint32_t* art = RegionImage(region, &w, &h);
+        const int32_t ax = g[region].worldX * REGION_SCALE_NUM / REGION_SCALE_DEN - minX;
+        const int32_t ay = g[region].worldY * REGION_SCALE_NUM / REGION_SCALE_DEN - minY;
+        for (int32_t y = 0; y < h; y++) {
+            for (int32_t x = 0; x < w; x++) {
+                const size_t d = (size_t)(ay + y) * W + (size_t)(ax + x);
+                img[d] = art[(size_t)y * w + x];
+                reg[d] = (uint8_t)region;
+            }
+        }
+    }
+    /* The region arts keep a transparent pixel or two along their edges, so
+     * the seams between neighbours would show as dark lines. Close every
+     * short transparent run that has art at both ends (rows first, then
+     * columns) by repeating the nearer end; real holes and the map's outer
+     * edge stay as they are. */
+    FillSeams(img, reg, W, 1, (size_t)W, H);
+    FillSeams(img, reg, H, (size_t)W, 1, W);
+    sDetailRegion = reg;
+    sDetailW = W;
+    sDetailH = H;
+    sDetailX0 = minX;
+    sDetailY0 = minY;
+    sDetailImage = img; /* publish last */
+    return 1;
+}
+
+int Port_SecondScreenWorldMap_GetDetailMap(const uint32_t** outImage, const uint8_t** outRegionOf, int32_t* outW,
+                                           int32_t* outH) {
+    if (sDetailImage == NULL && !BuildDetailMap()) {
+        return 0;
+    }
+    if (outImage) *outImage = sDetailImage;
+    if (outRegionOf) *outRegionOf = sDetailRegion;
+    if (outW) *outW = sDetailW;
+    if (outH) *outH = sDetailH;
+    return 1;
+}
+
+/* Region rect -> detail-map pixel rect (for centering on a picked tile). */
+int Port_SecondScreenWorldMap_GetDetailRegionRect(int32_t region, int32_t* outX, int32_t* outY, int32_t* outW,
+                                                  int32_t* outH) {
+    RegionGeometry g;
+    if (sDetailImage == NULL || !GetRegionGeometry(region, &g)) {
+        return 0;
+    }
+    *outX = g.worldX * REGION_SCALE_NUM / REGION_SCALE_DEN - sDetailX0;
+    *outY = g.worldY * REGION_SCALE_NUM / REGION_SCALE_DEN - sDetailY0;
+    *outW = g.artW;
+    *outH = g.artH;
+    return 1;
+}
+
 /* sub_080A69E0 verbatim (src/menu/pauseMenuScreen6.c), minus the -1 returns
  * the callers express as "not in this region": an overworld pixel position
  * must resolve to a region row, that row must be the one being drawn, and
@@ -945,6 +1072,29 @@ int Port_SecondScreenWorldMap_LocateInRegion(int32_t region, uint8_t area, int32
     return LocalizeInRegion(region, areaX, areaY, dstW, dstH, outX, outY);
 }
 
+
+/* Player (or any overworld point) in detail-map pixels. */
+int Port_SecondScreenWorldMap_LocateInDetail(uint8_t area, int32_t areaX, int32_t areaY, int32_t* outX,
+                                             int32_t* outY) {
+    const OverworldLocation* here;
+    int32_t lx, ly, rx, ry, rw, rh;
+    if (sDetailImage == NULL || outX == NULL || outY == NULL) {
+        return 0;
+    }
+    if (area >= 153 || gAreaMetadata[area].flags != (AR_IS_OVERWORLD | AR_ALLOWS_WARP) || (areaX | areaY) == 0) {
+        return 0;
+    }
+    here = GetOverworldLocation((u32)areaX, (u32)areaY);
+    if (here == NULL || !Port_SecondScreenWorldMap_GetDetailRegionRect(here->windcrestId, &rx, &ry, &rw, &rh)) {
+        return 0;
+    }
+    if (!LocalizeInRegion(here->windcrestId, areaX, areaY, rw, rh, &lx, &ly)) {
+        return 0;
+    }
+    *outX = rx + lx;
+    *outY = ry + ly;
+    return 1;
+}
 
 int32_t Port_SecondScreenWorldMap_GetRegionMarkers(int32_t region, uint32_t hintMask,
                                                    const uint8_t* fusedKinstones,

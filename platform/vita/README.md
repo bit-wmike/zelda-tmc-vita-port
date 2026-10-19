@@ -42,6 +42,13 @@ Taste drücken (Dreieck, Viereck, rechter Stick ← / →, ein Rückseiten-Feld 
 L2/R2 am PS TV). Alternativ Select halten + Kreuz/Kreis für Dreieck/Viereck.
 Die Belegung wird in `ux0:data/tmc/tmc.softslots` gespeichert.
 
+## Karte im Overlay
+
+Die Weltkarte zeigt erst ganz Hyrule. **R** (oder „ZOOM“) wechselt in die Detailkarte:
+alle Gebietskarten des Spiels zu einer Karte zusammengesetzt, zwei Zoomstufen (R/L).
+Verschieben mit dem Finger, dem Steuerkreuz oder dem linken Stick; ein Tipp auf ein
+Gebiet der Gesamtkarte springt direkt dorthin. Noch nicht entdeckte Gebiete bleiben grau.
+
 ## Vita-Menü
 
 - **Anzeige:** Bildstil (Weich / Scharf / Pixelgenau), Breitbild, Weitsicht (bis 400×240),

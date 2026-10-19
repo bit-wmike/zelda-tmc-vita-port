@@ -1256,7 +1256,15 @@ static int Port_WidescreenFixedCanvasSubtask(void) {
 /* Normal gameplay on the map (not the pause/menu canvases). Used by the Vita
  * presenter to keep one zoom level while Full View is enabled. */
 int Port_Widescreen_GameplayCanvas(void) {
-    return gMain.task == TASK_GAME && !Port_WidescreenFixedCanvasSubtask();
+    if (gMain.task != TASK_GAME) {
+        return 0;
+    }
+    /* The Minish portal's falling cutscene (subtask 6) follows the framed
+     * portal close-up directly; zooming in for it read as a jump. */
+    if (gMain.substate == GAMEMAIN_SUBTASK && gUI.lastState == 6) {
+        return 1;
+    }
+    return !Port_WidescreenFixedCanvasSubtask();
 }
 
 static int Port_WidescreenFullViewUiOverlayActive(void) {
@@ -1300,6 +1308,19 @@ static Port3DSFullViewInputs Port_WidescreenFullViewInputs(void) {
      * Repeating it across 400 pixels creates a visible seam; keep the entire
      * scene on E2 until that overlay has a semantic 64-column map. */
     inputs.unsupportedScene = gRoomControls.area == AREA_MT_CRENEL && gRoomControls.room == 2;
+#ifdef TMC_VITA
+    /* Minish portal: the spin on the stump parks the camera (camera_target =
+     * NULL) without moving it, so Full View can stay. The close-up after it
+     * is a GBA-sized iris aimed from the scroll position: drop to the normal
+     * view on its first frame, before the close-up object takes its aim. */
+    if (!inputs.playerValid && gMain.substate == GAMEMAIN_UPDATE && gPlayerEntity.base.kind == PLAYER &&
+        (gPlayerState.flags & PL_USE_PORTAL) != 0) {
+        inputs.playerValid = 1;
+    }
+    if (gMain.substate == GAMEMAIN_MINISHPORTAL) {
+        inputs.unsupportedScene = 1;
+    }
+#endif
     if (gRoomControls.area <= AREA_98) {
         inputs.areaIsExterior = Port3DSFullViewPolicy_AreaIsExterior(
             gRoomControls.area, gRoomControls.room, gAreaMetadata[gRoomControls.area].flags);
@@ -1417,10 +1438,21 @@ static s32 Port_WidescreenEffectiveTarget(void) {
     return target;
 }
 
+/* Scenes drawn for exactly the GBA screen even with Breitbild on. */
+static int Port_WidescreenNativeScene(void) {
+#ifdef TMC_VITA
+    /* The Minish portal close-up: its iris window is clipped at x=240, which
+     * left a black strip on the right of a 266 px view. */
+    return gMain.task == TASK_GAME && gMain.substate == GAMEMAIN_MINISHPORTAL;
+#else
+    return 0;
+#endif
+}
+
 static int Port_WidescreenEstablishedViewWidth(void) {
     int target = Port_WidescreenBaseTargetViewWidth();
     int roomWidth = (int)gRoomControls.width;
-    if (!Port_Config_WidescreenEnabled() || target <= 240) {
+    if (!Port_Config_WidescreenEnabled() || target <= 240 || Port_WidescreenNativeScene()) {
         return 240;
     }
     if (roomWidth < target) {
@@ -1438,7 +1470,7 @@ static int Port_WidescreenEstablishedViewWidth(void) {
 
 int Port_Widescreen_FallbackNative(void) {
     s32 eff;
-    if (!Port_Config_WidescreenEnabled()) {
+    if (!Port_Config_WidescreenEnabled() || Port_WidescreenNativeScene()) {
         return 1;
     }
     if (Port_Widescreen_TargetViewWidth() <= 240) {
@@ -1626,9 +1658,38 @@ int Port_Widescreen_CameraRestY(int target_y) {
     return Port_WidescreenCameraRestYForMode(target_y, Port_WidescreenGameplayMode());
 }
 
+static int Port_WidescreenViewWForMode(Port3DSFullViewMode mode) {
+    return mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X ? Port_WidescreenFullViewW() :
+           mode == PORT_3DS_FULL_VIEW_INTERIOR_2X ? 200 :
+           Port_WidescreenEstablishedViewWidth();
+}
+
+static int Port_WidescreenViewHForMode(Port3DSFullViewMode mode) {
+    return mode == PORT_3DS_FULL_VIEW_OUTDOOR_1X ? Port_WidescreenFullViewH() :
+           mode == PORT_3DS_FULL_VIEW_INTERIOR_2X ? 120 : 160;
+}
+
 static void Port_WidescreenSnapGameplayCamera(Port3DSFullViewMode mode) {
+    const Port3DSFullViewMode previous = sWsGameplayMode;
     sWsGameplayMode = mode;
     if (gRoomControls.camera_target == NULL) {
+#ifdef TMC_VITA
+        /* A script or the Minish portal holds the camera (the portal spin
+         * clears camera_target, which ends Full View). Keep the picture's
+         * centre instead of its top-left corner: otherwise the smaller view
+         * shows the upper left part of the old one, with Link in a corner,
+         * and the portal close-up that follows is aimed from that scroll. */
+        if (previous != mode) {
+            const int cx = gRoomControls.scroll_x + Port_WidescreenViewWForMode(previous) / 2;
+            const int cy = gRoomControls.scroll_y + Port_WidescreenViewHForMode(previous) / 2;
+            gRoomControls.scroll_x = (s16)Port_WidescreenCameraRestXForMode(cx, mode);
+            gRoomControls.scroll_y = (s16)Port_WidescreenCameraRestYForMode(cy, mode);
+            gUpdateVisibleTiles = 1;
+            UpdateScreenShake();
+        }
+#else
+        (void)previous;
+#endif
         return;
     }
     gRoomControls.scroll_x = (s16)Port_WidescreenCameraRestXForMode(
@@ -2090,10 +2151,15 @@ void Port_Widescreen_UpdateShadows(void) {
      * interior) and the bottom border row outside the y-band (torn by the
      * HUD right-anchor remap). Clamp to the native canvas. */
     if ((gMessage.state & MESSAGE_ACTIVE) != 0) {
-        int x0 = (int)gMessage.textWindowPosX * 8;
-        int x1 = ((int)gMessage.textWindowPosX + (int)gMessage.textWindowWidth + 2) * 8;
-        int y0 = (int)gMessage.textWindowPosY * 8;
-        int y1 = ((int)gMessage.textWindowPosY + (int)gMessage.textWindowHeight + 2) * 8;
+        /* The text renderer works on its own copy (gTextRender.message), and
+         * a position token inside the text can move the box there (item-get
+         * boxes sit two rows lower than gMessage says). Use that copy once it
+         * belongs to the running message. */
+        const Message* box = gTextRender.message.textIndex == gMessage.textIndex ? &gTextRender.message : &gMessage;
+        int x0 = (int)box->textWindowPosX * 8;
+        int x1 = ((int)box->textWindowPosX + (int)box->textWindowWidth + 2) * 8;
+        int y0 = (int)box->textWindowPosY * 8;
+        int y1 = ((int)box->textWindowPosY + (int)box->textWindowHeight + 2) * 8;
         if (x0 < 0)
             x0 = 0;
         if (x1 > 240)

@@ -288,6 +288,15 @@ static struct {
     int32_t regionId;
     int32_t regionX0, regionY0, regionX1, regionY1;
     uint32_t regionTick;
+#ifdef TMC_VITA
+    /* Detail map (enlarged region maps as one pannable map): center in
+     * detail-map pixels, zoom step, follow-Link flag, and the scale of the
+     * last painted frame for turning screen drags into map distances. */
+    float detailX, detailY, detailScale;
+    uint8_t detailZoom;
+    uint8_t detailFollow;
+    uint8_t detailLive;
+#endif
     /* Set by paint when the zoom grid answers, so the tap handler knows
      * whether a map tap can zoom at all (stub -> plain follow/whole
      * toggle, exactly the behavior before the zoom existed). */
@@ -300,7 +309,13 @@ static struct {
     uint8_t loadStateResult;
     uint8_t loadConfirmActive;
     uint8_t unavailableNoticeActive;
-} sUi = { .floorPreview = SS_NO_FLOOR, .playerFloorDisp = SS_NO_FLOOR };
+} sUi = {
+    .floorPreview = SS_NO_FLOOR,
+    .playerFloorDisp = SS_NO_FLOOR,
+#ifdef TMC_VITA
+    .detailFollow = 1,
+#endif
+};
 
 /* sUi.questView */
 enum { SS_QUEST_MAIN = 0, SS_QUEST_KINSTONES, SS_QUEST_TECHNIQUES };
@@ -1092,6 +1107,179 @@ static float WholeMapCenterX(float width, float scale) {
 }
 #endif
 
+#ifdef TMC_VITA
+/* ------------------------------------------------------------------ */
+/*  Detail map (Vita)                                                  */
+/* ------------------------------------------------------------------ */
+
+#define SS_DETAIL_ZOOM_STEPS 2
+static const float kDetailScale[SS_DETAIL_ZOOM_STEPS] = { 2.0f, 3.0f };
+static struct {
+    int valid;
+    int32_t x, y;
+} sDetailFix;
+
+/* The game's enlarged region maps stitched into one map of Hyrule, shown
+ * at a fixed pixel scale and moved with the finger, the D-pad or the stick
+ * (L/R zoom). Regions the player hasn't uncovered stay gray, like on the
+ * pause map. Returns 0 while the art isn't decodable yet. */
+static int PaintDetailMap(const SSurf* s, const SecondScreenSnapshot* snap, TargetList* tl, float rx0, float ry0,
+                          float rx1, float ry1, float u, uint32_t tick) {
+    const uint32_t* img;
+    const uint8_t* regionOf;
+    int32_t W, H;
+    if (!Port_SecondScreenWorldMap_GetDetailMap(&img, &regionOf, &W, &H)) {
+        return 0;
+    }
+    int32_t lx, ly;
+    if (Port_SecondScreenWorldMap_LocateInDetail(snap->area, snap->playerX, snap->playerY, &lx, &ly)) {
+        sDetailFix.valid = 1;
+        sDetailFix.x = lx;
+        sDetailFix.y = ly;
+    }
+
+    const float chipBottom = ry1;
+    const float fullX0 = rx0, fullX1 = rx1;
+    UI_LOCK();
+    int zoom = sUi.detailZoom < SS_DETAIL_ZOOM_STEPS ? sUi.detailZoom : SS_DETAIL_ZOOM_STEPS - 1;
+    float cx = sUi.detailX, cy = sUi.detailY;
+    if (sUi.detailFollow) {
+        if (sDetailFix.valid) {
+            cx = (float)sDetailFix.x;
+            cy = (float)sDetailFix.y;
+        } else {
+            cx = W / 2.0f;
+            cy = H / 2.0f;
+        }
+    }
+    const float scale = kDetailScale[zoom];
+    const float halfW = (rx1 - rx0) / (2.0f * scale), halfH = (ry1 - ry0) / (2.0f * scale);
+    if (W <= 2 * halfW) cx = W / 2.0f;
+    else cx = cx < halfW ? halfW : (cx > W - halfW ? W - halfW : cx);
+    if (H <= 2 * halfH) cy = H / 2.0f;
+    else cy = cy < halfH ? halfH : (cy > H - halfH ? H - halfH : cy);
+    sUi.detailX = cx;
+    sUi.detailY = cy;
+    sUi.detailScale = scale;
+    sUi.detailLive = 1;
+    sUi.mapLive = 0; /* taps here must not pick world-map tiles */
+    UI_UNLOCK();
+
+    /* Inset a little and frame it, like the world map's stone frame. */
+    {
+        const float t = u < 1 ? 1 : u;
+        StrokeRoundRect(s, rx0 + 4 * u, ry0 + 4 * u, rx1 - 4 * u, ry1 - 4 * u, 3 * t, 3 * t,
+                        Port_SecondScreenTheme_Color(SSC_MENU_INK));
+        rx0 += 7 * u;
+        ry0 += 7 * u;
+        rx1 -= 7 * u;
+        ry1 -= 7 * u;
+    }
+    const uint32_t revealed = Port_SecondScreenWorldMap_RevealedMask(snap->windcrests);
+    const uint32_t outside = RGB(0x18, 0x20, 0x28);
+    const uint32_t covered = RGB(0x9C, 0x9C, 0x94);
+    const int32_t x0 = (int32_t)rx0 < 0 ? 0 : (int32_t)rx0, x1 = (int32_t)rx1 > s->w ? s->w : (int32_t)rx1;
+    const int32_t y0 = (int32_t)ry0 < 0 ? 0 : (int32_t)ry0, y1 = (int32_t)ry1 > s->h ? s->h : (int32_t)ry1;
+    const float midX = (rx0 + rx1) / 2.0f, midY = (ry0 + ry1) / 2.0f;
+    int32_t colMap[1024];
+    if (x1 - x0 > 1024) return 0;
+    for (int32_t x = x0; x < x1; x++) {
+        colMap[x - x0] = (int32_t)floorf(cx + ((float)x + 0.5f - midX) / scale);
+    }
+    for (int32_t y = y0; y < y1; y++) {
+        uint32_t* row = s->px + (size_t)y * (size_t)s->stride;
+        const int32_t my = (int32_t)floorf(cy + ((float)y + 0.5f - midY) / scale);
+        if (my < 0 || my >= H) {
+            for (int32_t x = x0; x < x1; x++) row[x] = outside;
+            continue;
+        }
+        const uint32_t* src = img + (size_t)my * W;
+        const uint8_t* reg = regionOf + (size_t)my * W;
+        for (int32_t x = x0; x < x1; x++) {
+            const int32_t mx = colMap[x - x0];
+            uint32_t c = outside;
+            if (mx >= 0 && mx < W) {
+                const uint8_t r = reg[mx];
+                if (r != 0xFF && ((revealed >> r) & 1u) == 0) c = covered;
+                else if ((src[mx] >> 24) != 0) c = src[mx];
+            }
+            row[x] = c;
+        }
+    }
+
+    /* Markers of every uncovered region (map hints, kinstone fusions). */
+    {
+        const int32_t mscale = (int32_t)scale;
+        const uint32_t markInk = Port_SecondScreenTheme_Color(SSC_MENU_INK);
+        for (int32_t region = 0; region < 17; region++) {
+            int32_t ox, oy, rw, rh;
+            if (((revealed >> region) & 1u) == 0 ||
+                !Port_SecondScreenWorldMap_GetDetailRegionRect(region, &ox, &oy, &rw, &rh)) {
+                continue;
+            }
+            SecondScreenMapMarker marks[48];
+            int32_t n = Port_SecondScreenWorldMap_GetRegionMarkers(region, snap->mapHints, snap->fusedKinstones,
+                                                                  snap->fusionUnmarked, rw, rh, marks, 48);
+            for (int32_t i = 0; i < n; i++) {
+                const float sx = midX + ((float)(ox + marks[i].x) - cx) * scale;
+                const float sy = midY + ((float)(oy + marks[i].y) - cy) * scale;
+                if (sx - 8 * mscale < rx0 || sx + 8 * mscale > rx1 || sy - 8 * mscale < ry0 || sy + 8 * mscale > ry1)
+                    continue;
+                Port_SecondScreenWorldMap_DrawMarker(s->px, s->w, s->h, s->stride, (int32_t)sx - 8 * mscale,
+                                                     (int32_t)sy - 8 * mscale, mscale, marks[i].frame, region,
+                                                     markInk);
+            }
+        }
+    }
+    if (sDetailFix.valid) {
+        const float sx = midX + ((float)sDetailFix.x - cx) * scale;
+        const float sy = midY + ((float)sDetailFix.y - cy) * scale;
+        if (sx >= rx0 && sx < rx1 && sy >= ry0 && sy < ry1) {
+            const uint32_t gold = Port_SecondScreenTheme_Color(SSC_GOLD);
+            DrawMapMarker(s, (int32_t)sx, (int32_t)sy, (int32_t)(7.0f * u), (tick & 8) ? RGB(0xF8, 0xF8, 0xF8) : gold);
+        }
+    }
+
+    float chip[4];
+    DrawMapChip(s, "ZOOM", (fullX0 + fullX1) / 2.0f, chipBottom - 12 * u, u, chip);
+    AddTarget(tl, chip[0], chip[1], chip[2], chip[3], SS_ACT_MAPZOOM, 0);
+    AddTarget(tl, rx0, ry0, rx1, ry1, SS_ACT_MAP, 0);
+    return 1;
+}
+
+/* Moves the detail map by (dx, dy) screen pixels (positive = the view
+ * moves right/down). Drags pass the negated finger motion. */
+void Port_SecondScreen_MapPan(float dx, float dy) {
+    UI_LOCK();
+    if (sUi.tab == SS_TAB_MAP && sUi.detailLive && !sUi.wholeMap && sUi.detailScale > 0.0f) {
+        sUi.detailFollow = 0;
+        sUi.detailX += dx / sUi.detailScale;
+        sUi.detailY += dy / sUi.detailScale;
+    }
+    UI_UNLOCK();
+}
+
+/* L/R: whole map <-> detail map <-> closer detail map. */
+void Port_SecondScreen_MapZoom(int dir) {
+    UI_LOCK();
+    if (sUi.tab == SS_TAB_MAP) {
+        if (dir > 0) {
+            if (sUi.wholeMap) {
+                sUi.wholeMap = 0;
+                sUi.detailZoom = 0;
+                sUi.detailFollow = 1;
+            } else if (sUi.detailZoom + 1 < SS_DETAIL_ZOOM_STEPS) {
+                sUi.detailZoom++;
+            }
+        } else if (dir < 0 && !sUi.wholeMap) {
+            if (sUi.detailZoom > 0) sUi.detailZoom--;
+            else sUi.wholeMap = 1;
+        }
+    }
+    UI_UNLOCK();
+}
+#endif
+
 /* The interactive overworld map, full-bleed in the map area: a gliding
  * follow-cam centered on Link, tap to toggle the whole-map fitted view,
  * and from the whole view a tap on a map tile brackets it and zooms into
@@ -1288,6 +1476,19 @@ static void PaintOverworld(const SSurf* s, const SecondScreenSnapshot* snap, Tar
             UI_LOCK();
             if (sUi.regionState == SS_REGION_BRACKET) {
                 sUi.regionState = SS_REGION_VIEW;
+#ifdef TMC_VITA
+                /* Vita: open the detail map centered on the picked tile. */
+                int32_t dx, dy, dw, dh;
+                if (Port_SecondScreenWorldMap_GetDetailMap(NULL, NULL, NULL, NULL) &&
+                    Port_SecondScreenWorldMap_GetDetailRegionRect(sUi.regionId, &dx, &dy, &dw, &dh)) {
+                    sUi.regionState = SS_REGION_OFF;
+                    sUi.wholeMap = 0;
+                    sUi.detailZoom = 0;
+                    sUi.detailFollow = 0;
+                    sUi.detailX = dx + dw / 2.0f;
+                    sUi.detailY = dy + dh / 2.0f;
+                }
+#endif
             }
             UI_UNLOCK();
         }
@@ -1316,7 +1517,11 @@ static void PaintOverworld(const SSurf* s, const SecondScreenSnapshot* snap, Tar
      * finger. It used to toggle the view as well, which meant every tap
      * that missed a rectangle took you somewhere you hadn't asked to go.
      * Added ahead of the map's own target so it wins the hit test. */
+#ifdef TMC_VITA
+    if (1) { /* Vita: the chip always leads to the detail map */
+#else
     if (followCfg && sLastFix.valid) {
+#endif
         /* With no fix, or the follow cam switched off, the whole map is the
          * only view there is and the chip would have nothing to step to. */
         float chip[4];
@@ -3020,7 +3225,15 @@ void Port_SecondScreen_PaintInto(uint32_t* pixels, int width, int height, int st
          * drawn the view drops straight back to the world map, so the
          * panel is never left on a blank region. */
         int drewRegion = 0;
-        if (regionState == SS_REGION_VIEW) {
+#ifdef TMC_VITA
+        UI_LOCK();
+        sUi.detailLive = 0;
+        UI_UNLOCK();
+        if (!wholeMap && regionState == SS_REGION_OFF) {
+            drewRegion = PaintDetailMap(&s, snap, &tl, mx0, my0, mx1, my1, u, tick);
+        }
+#endif
+        if (!drewRegion && regionState == SS_REGION_VIEW) {
             drewRegion = PaintRegion(&s, snap, &tl, mx0, my0, mx1, my1, u, tick, regionId);
             if (!drewRegion) {
                 UI_LOCK();
@@ -3353,6 +3566,12 @@ void Port_SecondScreen_OnTap(int x, int y, int longPress) {
             /* Step the zoom: Link's close view <-> the whole of Hyrule. */
             UI_LOCK();
             sUi.wholeMap = !sUi.wholeMap;
+#ifdef TMC_VITA
+            if (!sUi.wholeMap) {
+                sUi.detailZoom = 0;
+                sUi.detailFollow = 1;
+            }
+#endif
             UI_UNLOCK();
             break;
     }

@@ -87,6 +87,12 @@ static bool sOverlayForce = true;
 
 /* touch tracking */
 static bool sTouchWasActive;
+static bool sDragging; /* overlay map drag in progress */
+static int sDragLastX, sDragLastY;
+extern void Port_SecondScreen_MapPan(float dx, float dy);
+extern void Port_SecondScreen_MapZoom(int dir);
+/* Host test hook: one drag step of (dx, dy) finger pixels on the map. */
+void TmcVitaUi_TestOverlayDrag(int dx, int dy) { Port_SecondScreen_MapPan((float)-dx, (float)-dy); }
 static int sTouchStartX, sTouchStartY, sTouchX, sTouchY;
 static uint64_t sTouchStartUs;
 static bool sTouchMoved;
@@ -539,7 +545,35 @@ void TmcVita_OnInputPolled(const TmcInputState* input, uint32_t down) {
     } else if (sMode == UI_MENU) {
         MenuInput(down, held);
     } else if (sMode == UI_OVERLAY) {
-        if (down || touchEvent) sOverlayForce = true;
+        /* Map: drag with the finger, move with D-pad / stick, L/R zoom. */
+        const uint32_t dirs = TMC_KEY_LEFT | TMC_KEY_RIGHT | TMC_KEY_UP | TMC_KEY_DOWN;
+        if (input->touchActive && sTouchMoved) {
+            if (!sDragging) {
+                sDragging = true;
+                sDragLastX = sTouchStartX;
+                sDragLastY = sTouchStartY;
+            }
+            Port_SecondScreen_MapPan((float)(sDragLastX - sTouchX), (float)(sDragLastY - sTouchY));
+            sDragLastX = sTouchX;
+            sDragLastY = sTouchY;
+        } else if (!input->touchActive) {
+            sDragging = false;
+        }
+        if (held & dirs) {
+            float px = 0.0f, py = 0.0f;
+            const bool analog = input->stickX * input->stickX + input->stickY * input->stickY > 0.25f;
+            if (analog) {
+                px = input->stickX;
+                py = input->stickY;
+            } else {
+                px = (held & TMC_KEY_RIGHT) ? 1.0f : (held & TMC_KEY_LEFT) ? -1.0f : 0.0f;
+                py = (held & TMC_KEY_DOWN) ? 1.0f : (held & TMC_KEY_UP) ? -1.0f : 0.0f;
+            }
+            Port_SecondScreen_MapPan(px * 10.0f, py * 10.0f);
+        }
+        if (down & TMC_KEY_R) Port_SecondScreen_MapZoom(+1);
+        if (down & TMC_KEY_L) Port_SecondScreen_MapZoom(-1);
+        if (down || touchEvent || (held & dirs)) sOverlayForce = true;
         if (down & (TMC_KEY_B | TMC_KEY_OVERLAY | TMC_KEY_START)) CloseUi();
         else if (down & TMC_KEY_MENU) OpenMenu();
         else if (!InGame()) CloseUi();

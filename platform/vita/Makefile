@@ -109,7 +109,7 @@ ARCH_FLAGS := -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthum
 LDLIBS := -lvita2d -lSceDisplay_stub -lSceCtrl_stub -lSceTouch_stub -lSceAudio_stub \
           -lScePower_stub -lSceAppUtil_stub -lSceAppMgr_stub -lSceSysmodule_stub \
           -lSceCommonDialog_stub -lSceGxm_stub -lScePgf_stub \
-          -lSceKernelDmacMgr_stub -lpthread -lm -lstdc++
+          -lSceKernelDmacMgr_stub -lpthread -lm -lstdc++ -Wl,-T,$(CURDIR)/vita.ld
 OUT := $(BUILD)/tmc_vita.elf
 endif
 

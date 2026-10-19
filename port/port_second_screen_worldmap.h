@@ -75,6 +75,16 @@ typedef struct {
     uint8_t frame;
 } SecondScreenMapMarker;
 
+/* Vita detail map: every enlarged region map stitched at their common
+ * scale into one image (RGBA, 0 alpha = nothing), plus the region id of
+ * every pixel (0xFF = none). Returns 0 while the data isn't ready. */
+int Port_SecondScreenWorldMap_GetDetailMap(const uint32_t** outImage, const uint8_t** outRegionOf, int32_t* outW,
+                                           int32_t* outH);
+int Port_SecondScreenWorldMap_GetDetailRegionRect(int32_t region, int32_t* outX, int32_t* outY, int32_t* outW,
+                                                  int32_t* outH);
+int Port_SecondScreenWorldMap_LocateInDetail(uint8_t area, int32_t areaX, int32_t areaY, int32_t* outX,
+                                             int32_t* outY);
+
 /* `region` value naming the world map's own marker art rather than an
  * enlarged region's (the two screens load different tiles to the same VRAM). */
 #define SECOND_SCREEN_WORLDMAP_NO_REGION (-1)
