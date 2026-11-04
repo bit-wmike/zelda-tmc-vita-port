@@ -30,7 +30,7 @@ static bool sVsync = true;
 static _Atomic float sVolume = 1.0f;
 static _Atomic int sBackdrop;
 static _Atomic unsigned sTurboMultiplier = 5;
-static _Atomic bool sFullView;
+static _Atomic bool sFullView = true; /* fresh install: Weitsicht */
 static _Atomic bool sHalfRate; /* frame_rate_30: present every 2nd frame */
 static unsigned sRebornMask;
 static _Atomic bool sRearTouch;

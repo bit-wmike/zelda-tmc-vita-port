@@ -51,7 +51,7 @@ Gebiet der Gesamtkarte springt direkt dorthin. Noch nicht entdeckte Gebiete blei
 
 ## Vita-Menü
 
-- **Anzeige:** Bildstil (Weich / Scharf / Pixelgenau), Breitbild, Weitsicht (bis 400×240),
+- **Anzeige:** Bildstil (Weich / Scharf / Pixelgenau), Ansicht (GBA / Breitbild / Weitsicht bis 400×240, Standard Weitsicht),
   Bildrate 30 (konstant), GBA-Farbkorrektur, Lautstärke, FPS-Anzeige, Rand-Symbole
 - **Steuerung:** Rückseiten-Touch, Turbo-Faktor, Text vorspulen, Auto-Speichern und alle
   „Minish Cap Reborn“-Komfortfunktionen (Pegasusstiefel auf L+R, Okarina auf L+Select,

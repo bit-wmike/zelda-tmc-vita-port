@@ -15,6 +15,10 @@
 #include "assets/gfx_offsets.h"
 #include "port_offset_remap.h"
 #include "player.h"
+#ifdef TMC_VITA
+#include "port_ws_tileset.h"
+#include <string.h>
+#endif
 
 void HyruleTownTileSetManager_UpdateLoadGfxGroups(HyruleTownTileSetManager*);
 void HyruleTownTileSetManager_OnEnterRoom(HyruleTownTileSetManager*);
@@ -86,6 +90,60 @@ extern const u8* gGlobalGfxAndPalettes;
 extern const u8 gGlobalGfxAndPalettes[];
 #endif
 
+#ifdef TMC_VITA
+/* Wide views can show parts of the town that need different data in the
+ * same slot (port_ws_tileset.h). A group writes two 4 KiB blocks
+ * (HyruleTownTileSetManager_LoadGfxGroup); group 2 also gets the finished
+ * second oracle house (HyruleTownTileSetManager_BuildSecondOracleHouse). */
+static u16 HyruleTown_WsWrite(u32 group, u8* vram, bool32 festival) {
+    const HyruleTownTileSetManagerGfxInfo* info;
+    u32 base;
+    if (group > 5)
+        return 0;
+    info = festival ? &gHyruleTownTileSetManagerGfxInfosFestival[group] : &gHyruleTownTileSetManagerGfxInfos[group];
+    base = festival ? offset_gUnk_086E8460 : offset_gUnk_086D4460;
+    const u32 adj = Port_RemapGfxOffset(base) - base;
+    const u32 off1 = (u32)(uintptr_t)info->dest1 - 0x06000000u;
+    const u32 off2 = (u32)(uintptr_t)info->dest2 - 0x06000000u;
+    u16 pages = 0;
+    if (off1 + BG_SCREEN_SIZE * 2 <= 0x10000u) {
+        memcpy(vram + off1, &gGlobalGfxAndPalettes[info->gfx1 + adj], BG_SCREEN_SIZE * 2);
+        pages |= (u16)(1u << (off1 >> 12));
+    }
+    if (off2 + BG_SCREEN_SIZE * 2 <= 0x10000u) {
+        memcpy(vram + off2, &gGlobalGfxAndPalettes[info->gfx2 + adj], BG_SCREEN_SIZE * 2);
+        pages |= (u16)(1u << (off2 >> 12));
+    }
+    if (!festival && group == 2 && CheckGlobalFlag(TATEKAKE_HOUSE))
+        memcpy(vram + ((u32)(uintptr_t)BG_SCREEN_ADDR(3) - 0x06000000u), gUnk_086E8460, BG_SCREEN_SIZE);
+    return pages;
+}
+static u16 HyruleTown_WsWriteGroup(u32 group, u8* vram) {
+    return HyruleTown_WsWrite(group, vram, FALSE);
+}
+static u16 HyruleTown_WsWriteGroupFestival(u32 group, u8* vram) {
+    return HyruleTown_WsWrite(group, vram, TRUE);
+}
+static void HyruleTownTileSetManager_ReportWideView(void) {
+    static const u16 sNoRegions[] = { 0xff };
+    static const PortWsTileSet sSet = {
+        3,
+        { gHyruleTownTileSetManager_regions0, gHyruleTownTileSetManager_regions1,
+          gHyruleTownTileSetManager_regions2 },
+        HyruleTown_WsWriteGroup,
+        NULL,
+    };
+    static const PortWsTileSet sSetFestival = {
+        3,
+        { gHyruleTownTileSetManager_festivalRegions0, sNoRegions, gHyruleTownTileSetManager_festivalRegions2 },
+        HyruleTown_WsWriteGroupFestival,
+        NULL,
+    };
+    const u8 loaded[3] = { gRoomVars.graphicsGroups[0], gRoomVars.graphicsGroups[1], gRoomVars.graphicsGroups[2] };
+    Port_WsTileSet_Update(gRoomControls.area == AREA_FESTIVAL_TOWN ? &sSetFestival : &sSet, loaded);
+}
+#endif
+
 void HyruleTownTileSetManager_Main(HyruleTownTileSetManager* this) {
     if (super->action == 0) {
         super->action = 1;
@@ -96,6 +154,9 @@ void HyruleTownTileSetManager_Main(HyruleTownTileSetManager* this) {
         SetEntityPriority((Entity*)this, PRIO_PLAYER_EVENT);
     }
     HyruleTownTileSetManager_UpdateLoadGfxGroups(this);
+#ifdef TMC_VITA
+    HyruleTownTileSetManager_ReportWideView();
+#endif
 }
 
 void HyruleTownTileSetManager_OnEnterRoom(HyruleTownTileSetManager* this) {

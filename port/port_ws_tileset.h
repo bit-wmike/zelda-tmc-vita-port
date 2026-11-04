@@ -4,29 +4,38 @@
 /*
  * Tile-set swap areas in the wide views (Vita port).
  *
- * The Minish village swaps its whole BG tile set (and palettes) depending on
- * which part of the map touches the screen (minishVillageTileSetManager.c).
- * A 240x160 view never shows two parts with different sets; Breitbild and
- * Full View can, and the part whose set is not loaded showed foreign tiles.
+ * Some areas swap BG tile data (and palettes) depending on which part of the
+ * map touches the screen: the Minish village replaces its whole tile set
+ * (minishVillageTileSetManager.c), Hyrule Town three independent 8 KiB slots
+ * (hyruleTownTileSetManager.c). A 240x160 view never shows two parts that
+ * need different data in the same slot; Breitbild and Full View can, and the
+ * part whose data was not loaded showed foreign tiles.
  *
- * The manager reports its region table and which set VRAM holds. Each shadow
+ * The manager describes its slots (one region table each, same format as
+ * CheckRegionsOnScreen) and reports which group each slot holds. Each shadow
  * cell then gets a tile-set context for the renderer (cpu/mode1.h,
  * virtuappu_mode1_ws_alt_ctx): 0 = VRAM as loaded, otherwise an image of BG
- * VRAM with that cell's set (ROM data) plus the matching palettes.
+ * VRAM with the cell's groups written over it (ROM data) plus their palettes.
  */
 
 #include "global.h"
 
+#define PORT_WS_TILESET_MAX_SLOTS 3
+#define PORT_WS_TILESET_MAX_GROUPS 8
+
 typedef struct PortWsTileSet {
-    const u16* regions;        /* {group, x, y, w, h}..., terminated by 0xff */
-    const u32* gfx;            /* per group 16 words: 8 x {gfx offset, VRAM address} */
-    const u8* paletteGroups;   /* palette group per gfx group */
-    u8 groupCount;
+    u8 slotCount;
+    const u16* regions[PORT_WS_TILESET_MAX_SLOTS]; /* {group, x, y, w, h}..., 0xff */
+    /* Writes group's tile data into a BG VRAM image (offsets from 0x06000000)
+     * and returns the 4 KiB pages it fully replaces. */
+    u16 (*writeGroup)(u32 group, u8* vram);
+    /* Palette group loaded with the group, or -1 for none. */
+    int (*paletteGroup)(u32 group);
 } PortWsTileSet;
 
 #ifdef TMC_VITA
-/* Manager, once per update. loadedGroup = set completely in VRAM, or 0xff. */
-void Port_WsTileSet_Update(const PortWsTileSet* set, u32 loadedGroup);
+/* Manager, once per update. loaded[slot] = group completely in VRAM, or 0xff. */
+void Port_WsTileSet_Update(const PortWsTileSet* set, const u8* loaded);
 
 /* Shadow producer (port_linked_stubs.c), once per VBlank. */
 void Port_WsTileSet_BeginFrame(void);

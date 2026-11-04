@@ -132,10 +132,16 @@ typedef struct MenuTab {
 static const char* const kStyleNames[] = { "Weich", "Scharf", "Pixelgenau (3x)" };
 static int GetStyle(void) { return Port_Config_Get3DSDisplayStyle(); }
 static void SetStyle(int v) { Port_Config_SetVitaDisplayStyle(v); }
-static int GetWide(void) { return Port_Config_WidescreenEnabled(); }
-static void SetWide(int v) { Port_Config_SetWidescreenEnabled(v != 0); }
-static int GetFullView(void) { return Port_Config_VitaFullView(); }
-static void SetFullView(int v) { Port_Config_SetVitaFullView(v != 0); }
+/* One choice for the view: Weitsicht needs Breitbild underneath. */
+static const char* const kViewNames[] = { "GBA", "Breitbild", "Weitsicht" };
+static int GetView(void) {
+    if (!Port_Config_WidescreenEnabled()) return 0;
+    return Port_Config_VitaFullView() ? 2 : 1;
+}
+static void SetView(int v) {
+    Port_Config_SetWidescreenEnabled(v >= 1);
+    Port_Config_SetVitaFullView(v == 2);
+}
 static int GetHalfRate(void) { return Port_Config_VitaHalfRate(); }
 static void SetHalfRate(int v) { Port_Config_SetVitaHalfRate(v != 0); }
 static int GetColor(void) { return Port_Config_GetColorCorrection(); }
@@ -273,9 +279,10 @@ static void ActQuit(void) { sPendingQuit = true; }
 static const MenuItem kDisplayItems[] = {
     { IT_CHOICE, "Bildstil", "Scharf: knackige Pixel ohne Flimmern. Pixelgenau: exakt 3-fach.", GetStyle, SetStyle,
       NULL, kStyleNames, 0, 2, 1, false },
-    TOGGLE("Breitbild", "Mehr Spielwelt links und rechts sichtbar (Originalverh\xc3\xa4ltnis).", Wide),
-    TOGGLE("Weitsicht", "Zeigt bis zu 400x240 (ganze R\xc3\xa4ume) mit immer gleichem Zoom; kleine R\xc3\xa4ume mit Rand.",
-           FullView),
+    { IT_CHOICE, "Ansicht",
+      "GBA: 240x160. Breitbild: mehr Welt links und rechts. Weitsicht: bis 400x240 (ganze R\xc3\xa4ume), "
+      "immer gleicher Zoom.",
+      GetView, SetView, NULL, kViewNames, 0, 2, 1, false },
     TOGGLE("Bildrate 30 (konstant)", "Zeichnet jedes zweite Bild: gleichm\xc3\xa4\xc3\x9f" "ige 30 FPS. Das Spieltempo "
            "bleibt in beiden Modi immer gleich.", HalfRate),
     TOGGLE("GBA-Farbkorrektur", "Farben wie auf dem GBA-Bildschirm (etwas blasser).", Color),

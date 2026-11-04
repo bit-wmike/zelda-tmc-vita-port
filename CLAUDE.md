@@ -149,12 +149,12 @@ Prüfregeln vor jeder Version:
 1. **Hyrule-Stadt prüfen:** `hyruleTownTileSetManager.c` tauscht ebenfalls Kachelsätze je
    Region (Lücke zwischen Regionen nur 128 px) – in der Weitsicht vermutlich derselbe
    Fehler. Mit synthetischem Spielstand nicht testbar (weißer Bildschirm), braucht Mikes
-   Quick-State. Lösung analog über `PortWsTileSet` (Manager meldet Regionen/Gfx).
+   Quick-State. Code ist schon angebunden (`HyruleTownTileSetManager_ReportWideView`,
+   3 Slots, Orakel-Haus-Sonderfall), aber noch nicht im Bild geprüft.
 2. **Pausemenü-Status:** halb verdecktes Element (Symbol + Ziffern) unter „SPEICHERN“ unten
    rechts, halb unter der Beschreibungsleiste. Mit Mikes Spielstand auf dem Host nicht sichtbar.
-3. **Vorschlag ohne Antwort:** Schalter „Breitbild“ und „Weitsicht“ zu einer Auswahl
-   „Ansicht: GBA / Breitbild / Weitsicht“ zusammenlegen, Weitsicht als Standard
-   (Weitsicht funktioniert heute nur mit Breitbild an; frische Installation hat Weitsicht aus).
+3. ~~Ansicht-Auswahl~~ erledigt in 0.1.10: Menü „Ansicht: GBA / Breitbild / Weitsicht“
+   (ini-Schlüssel unverändert `widescreen`/`full_view`), frische Installation = Weitsicht.
 4. Kosmetik/Leistung: Iris- und andere GBA-Fenstereffekte erzwingen die normale Ansicht;
    Raum-Scroll-Übergänge zeigen kurz 266×160; generischer Compositor (Affin-BG-Zeilen,
    z. B. Deepwood 48/20) ist noch der langsame Pfad; Overlay-Hintergrund nicht gecacht

@@ -14,50 +14,51 @@
 #include <stdbool.h>
 #include <string.h>
 
-extern const u8* gGlobalGfxAndPalettes;
-
 enum {
-    kMaxGroups = 8,
+    kMaxGroups = PORT_WS_TILESET_MAX_GROUPS,
+    kMaxSlots = PORT_WS_TILESET_MAX_SLOTS,
     kMapCells = 128,       /* gMapData*Special: 128 x 128 cells */
     kGbaViewW = 240,
     kGbaViewH = 160,
-    kBlockSize = 0x1000,   /* the managers load 4 KiB blocks */
-    kPages = MODE1_WS_ALT_VRAM_SIZE / kBlockSize,
+    kPageSize = 0x1000,
+    kPages = MODE1_WS_ALT_VRAM_SIZE / kPageSize,
 };
 
 static const PortWsTileSet* sSet;
 static u32 sRoomKey = 0xffffffffu; /* room of sSet / sCellGroup */
-static u8 sLoadedGroup = 0xff;
-static u8 sCellGroup[kMapCells * kMapCells]; /* 0xff = same in every set */
+static u8 sLoaded[kMaxSlots];
+static u8 sCellGroup[kMaxSlots][kMapCells * kMapCells]; /* 0xff = any data works */
 
 /* Per frame (BeginFrame .. PrepareRender). */
 static bool sFrameActive;
-static u8 sGroupCtx[kMaxGroups];
-static u8 sCtxGroup[MODE1_WS_ALT_MAX];
+static u8 sCtxMask[MODE1_WS_ALT_MAX]; /* groups written over VRAM per context */
 static int sCtxCount;
 static int sShadowCount;
 static u8 sShadowCtx[2][MODE1_WS_SHADOW_ROWS * MODE1_WS_SHADOW_COLS];
 
-/* Context images; a slot keeps its group's blocks between frames. */
+/* Context images; a slot keeps its groups' data between frames. */
 static u8 sAltVram[MODE1_WS_ALT_MAX][MODE1_WS_ALT_VRAM_SIZE] __attribute__((aligned(64)));
-static u8 sAltVramGroup[MODE1_WS_ALT_MAX] = { 0xff, 0xff, 0xff };
+static u16 sAltVramMask[MODE1_WS_ALT_MAX]; /* 0 = not built; else mask | 0x100 */
+static u16 sAltCovered[MODE1_WS_ALT_MAX];
+static const PortWsTileSet* sAltSet[MODE1_WS_ALT_MAX];
 static u16 sAltPalette[MODE1_WS_ALT_MAX][256];
 
 /* Palettes of each group's palette group (read once from the ROM). */
 static u16 sGroupPalette[kMaxGroups][256];
 static u16 sGroupPaletteBanks[kMaxGroups];
-static u8 sGroupPaletteId[kMaxGroups];
+static int sGroupPaletteId[kMaxGroups];
 static bool sGroupPaletteValid[kMaxGroups];
 
 static u32 CurrentRoomKey(void) {
     return ((u32)gRoomControls.area << 8) | gRoomControls.room;
 }
 
-/* Which set the GBA shows each cell with. A cell inside a region rect needs
- * that region's set. Other cells may still differ between sets (rects do not
- * always cover their buildings completely): use the set(s) the manager picks
- * for 240x160 views that contain the cell, the nearest such region on ties. */
-static void BuildCellGroups(const u16* regions, int roomW, int roomH) {
+/* Which group of one slot the GBA shows each cell with. A cell inside a
+ * region rect needs that region's group. Other cells may still differ
+ * between groups (rects do not always cover their buildings completely):
+ * use the group(s) the manager picks for 240x160 views that contain the
+ * cell, the nearest such region on ties. */
+static void BuildCellGroups(u8* cellGroup, const u16* regions, int roomW, int roomH) {
     static u8 viewGroup[kMapCells][kMapCells];
     static s32 cover[kMapCells + 1][kMapCells + 1];
     static u8 mask[kMapCells][kMapCells];
@@ -68,7 +69,9 @@ static void BuildCellGroups(const u16* regions, int roomW, int roomH) {
     const u16* r;
     int vx, vy, x, y, g;
 
-    memset(sCellGroup, 0xff, sizeof(sCellGroup));
+    memset(cellGroup, 0xff, kMapCells * kMapCells);
+    if (regions == NULL || regions[0] == 0xff)
+        return;
     memset(mask, 0, sizeof(mask));
     /* Same test as CheckRegionOnScreen with the GBA screen size. */
     for (vy = 0; vy < viewsH && vy < kMapCells; ++vy) {
@@ -128,29 +131,31 @@ static void BuildCellGroups(const u16* regions, int roomW, int roomH) {
                     best = r[0];
                 }
             }
-            sCellGroup[y * kMapCells + x] = (u8)best;
+            cellGroup[y * kMapCells + x] = (u8)best;
         }
     }
 }
 
-void Port_WsTileSet_Update(const PortWsTileSet* set, u32 loadedGroup) {
+void Port_WsTileSet_Update(const PortWsTileSet* set, const u8* loaded) {
     const u32 key = CurrentRoomKey();
-    if (set == NULL || set->groupCount > kMaxGroups) {
+    if (set == NULL || set->slotCount == 0 || set->slotCount > kMaxSlots) {
         sSet = NULL;
         return;
     }
     if (sSet != set || sRoomKey != key) {
         sSet = set;
         sRoomKey = key;
-        BuildCellGroups(set->regions, gRoomControls.width, gRoomControls.height);
+        for (int slot = 0; slot < kMaxSlots; ++slot)
+            BuildCellGroups(sCellGroup[slot], slot < set->slotCount ? set->regions[slot] : NULL,
+                            gRoomControls.width, gRoomControls.height);
     }
-    sLoadedGroup = loadedGroup < set->groupCount ? (u8)loadedGroup : 0xff;
+    for (int slot = 0; slot < kMaxSlots; ++slot)
+        sLoaded[slot] = slot < set->slotCount && loaded[slot] < kMaxGroups ? loaded[slot] : 0xff;
 }
 
 void Port_WsTileSet_BeginFrame(void) {
     for (int bg = 0; bg < MODE1_GBA_BG_COUNT; ++bg)
         virtuappu_mode1_ws_alt_ctx[bg] = NULL;
-    memset(sGroupCtx, 0, sizeof(sGroupCtx));
     sCtxCount = 0;
     sShadowCount = 0;
     sFrameActive = sSet != NULL && gMain.task == TASK_GAME && sRoomKey == CurrentRoomKey();
@@ -165,16 +170,23 @@ u8* Port_WsTileSet_BeginShadow(int scrolling) {
 u8 Port_WsTileSet_Ctx(s32 worldCol, s32 worldRow) {
     if ((u32)worldCol >= kMapCells || (u32)worldRow >= kMapCells)
         return 0;
-    const u8 g = sCellGroup[worldRow * kMapCells + worldCol];
-    if (g >= kMaxGroups || g == sLoadedGroup)
-        return 0;
-    if (sGroupCtx[g] == 0) {
-        if (sCtxCount >= MODE1_WS_ALT_MAX)
-            return 0; /* more sets on screen than contexts: VRAM as loaded */
-        sCtxGroup[sCtxCount] = g;
-        sGroupCtx[g] = (u8)++sCtxCount;
+    const int cell = worldRow * kMapCells + worldCol;
+    u8 mask = 0;
+    for (int slot = 0; slot < sSet->slotCount; ++slot) {
+        const u8 g = sCellGroup[slot][cell];
+        if (g < kMaxGroups && g != sLoaded[slot])
+            mask |= (u8)(1u << g);
     }
-    return sGroupCtx[g];
+    if (mask == 0)
+        return 0;
+    for (int k = 0; k < sCtxCount; ++k) {
+        if (sCtxMask[k] == mask)
+            return (u8)(k + 1);
+    }
+    if (sCtxCount >= MODE1_WS_ALT_MAX)
+        return 0; /* more combinations on screen than contexts: VRAM as loaded */
+    sCtxMask[sCtxCount] = mask;
+    return (u8)++sCtxCount;
 }
 
 void Port_WsTileSet_EndShadow(int bgIndex, u8* ctx) {
@@ -183,22 +195,24 @@ void Port_WsTileSet_EndShadow(int bgIndex, u8* ctx) {
 }
 
 /* The palette RAM banks a palette group writes, and their colours. */
-static bool LoadGroupPalette(u8 group) {
-    const u8 id = sSet->paletteGroups[group];
+static u16 LoadGroupPalette(u8 group) {
+    const int id = sSet->paletteGroup != NULL ? sSet->paletteGroup(group) : -1;
+    if (id < 0)
+        return 0;
     if (sGroupPaletteValid[group] && sGroupPaletteId[group] == id)
-        return sGroupPaletteBanks[group] != 0;
+        return sGroupPaletteBanks[group];
     u16 saved[512]; /* BG and OBJ halves of the buffer */
     const u32 savedUsed = gUsedPalettes;
     memcpy(saved, gPaletteBuffer, sizeof(saved));
     gUsedPalettes = 0;
-    LoadPaletteGroup(id);
+    LoadPaletteGroup((u32)id);
     memcpy(sGroupPalette[group], gPaletteBuffer, sizeof(sGroupPalette[group]));
     sGroupPaletteBanks[group] = (u16)gUsedPalettes;
     memcpy(gPaletteBuffer, saved, sizeof(saved));
     gUsedPalettes = savedUsed;
     sGroupPaletteId[group] = id;
     sGroupPaletteValid[group] = true;
-    return sGroupPaletteBanks[group] != 0;
+    return sGroupPaletteBanks[group];
 }
 
 void Port_WsTileSet_PrepareRender(void) {
@@ -209,33 +223,31 @@ void Port_WsTileSet_PrepareRender(void) {
     if (!used || sSet == NULL)
         sCtxCount = 0;
     for (k = 0; k < sCtxCount; ++k) {
-        const u8 g = sCtxGroup[k];
-        const u32* blocks = &sSet->gfx[g * 16];
-        u16 covered = 0;
-        int i;
-        for (i = 0; i < 8; ++i) {
-            const u32 off = blocks[i * 2 + 1] - 0x06000000u;
-            if (off < MODE1_WS_ALT_VRAM_SIZE) covered |= (u16)(1u << (off / kBlockSize));
-        }
-        if (sAltVramGroup[k] != g) {
-            for (i = 0; i < 8; ++i) {
-                const u32 off = blocks[i * 2 + 1] - 0x06000000u;
-                if (off + kBlockSize <= MODE1_WS_ALT_VRAM_SIZE)
-                    memcpy(&sAltVram[k][off], &gGlobalGfxAndPalettes[blocks[i * 2]], kBlockSize);
+        const u8 mask = sCtxMask[k];
+        int i, g;
+        if (sAltVramMask[k] != (u16)(mask | 0x100u) || sAltSet[k] != sSet) {
+            memcpy(sAltVram[k], gVram, MODE1_WS_ALT_VRAM_SIZE);
+            sAltCovered[k] = 0;
+            for (g = 0; g < kMaxGroups; ++g) {
+                if ((mask >> g) & 1u) sAltCovered[k] |= sSet->writeGroup((u32)g, sAltVram[k]);
             }
-            sAltVramGroup[k] = g;
+            sAltVramMask[k] = (u16)(mask | 0x100u);
+            sAltSet[k] = sSet;
+        } else {
+            /* Everything the groups do not replace comes from VRAM as it is now. */
+            for (i = 0; i < kPages; ++i) {
+                if (!((sAltCovered[k] >> i) & 1u))
+                    memcpy(&sAltVram[k][i * kPageSize], &gVram[i * kPageSize], kPageSize);
+            }
         }
-        /* Everything the set does not replace comes from VRAM as it is now. */
-        for (i = 0; i < kPages; ++i) {
-            if (!((covered >> i) & 1u))
-                memcpy(&sAltVram[k][i * kBlockSize], &gVram[i * kBlockSize], kBlockSize);
-        }
-        /* Palettes: RAM, with the set's banks replaced. A bank that differs
+        /* Palettes: RAM, with the groups' banks replaced. A bank that differs
          * from the engine's buffer is being faded; keep RAM there. */
         memcpy(sAltPalette[k], gBgPltt, sizeof(sAltPalette[k]));
-        if (LoadGroupPalette(g)) {
+        for (g = 0; g < kMaxGroups; ++g) {
+            if (!((mask >> g) & 1u)) continue;
+            const u16 banks = LoadGroupPalette((u8)g);
             for (int bank = 0; bank < 16; ++bank) {
-                if (!((sGroupPaletteBanks[g] >> bank) & 1u)) continue;
+                if (!((banks >> bank) & 1u)) continue;
                 if (memcmp(&gBgPltt[bank * 16], &gPaletteBuffer[bank * 16], 32) != 0) continue;
                 memcpy(&sAltPalette[k][bank * 16], &sGroupPalette[g][bank * 16], 32);
             }

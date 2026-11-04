@@ -12,6 +12,7 @@
 #include "main.h"
 #ifdef TMC_VITA
 #include "port_ws_tileset.h"
+#include <string.h>
 #endif
 
 void sub_08057E30(void*);
@@ -180,6 +181,28 @@ void MinishVillageTileSetManager_Main_USA(MinishVillageTileSetManager* this) {
             break;
     }
 }
+#ifdef TMC_VITA
+/* Tile data of one village set: eight 4 KiB blocks (sub_08057E7C). */
+static u16 MinishVillage_WsWriteGroup(u32 group, u8* vram) {
+    const u32* blocks = REGION_IS_EU ? &gUnk_081080A4_eu[group << 4] : &gUnk_081080A4[group << 4];
+    u16 pages = 0;
+    if (group > 4)
+        return 0;
+    for (u32 i = 0; i < 8; i++) {
+        const u32 off = blocks[i * 2 + 1] - 0x06000000u;
+        if (off + 0x1000u > 0x10000u)
+            continue;
+        memcpy(vram + off, &gGlobalGfxAndPalettes[blocks[i * 2]], 0x1000);
+        pages |= (u16)(1u << (off >> 12));
+    }
+    return pages;
+}
+
+static int MinishVillage_WsPaletteGroup(u32 group) {
+    return group <= 4 ? gUnk_081081E4[group] : -1;
+}
+#endif
+
 void MinishVillageTileSetManager_Main(MinishVillageTileSetManager* this) {
     if (REGION_IS_EU) {
         MinishVillageTileSetManager_Main_EU(this);
@@ -190,10 +213,13 @@ void MinishVillageTileSetManager_Main(MinishVillageTileSetManager* this) {
     {
         /* Wide views can show parts of two tile sets at once: tell the
          * renderer which set VRAM holds (0xff while one is still loading). */
-        static const PortWsTileSet sSetUsa = { gUnk_08108050, gUnk_081080A4, gUnk_081081E4, 5 };
-        static const PortWsTileSet sSetEu = { gUnk_08108050_eu, gUnk_081080A4_eu, gUnk_081081E4, 5 };
-        const u32 loaded = this->unk_20 == gRoomVars.graphicsGroups[0] && super->timer >= 8 ? this->unk_20 : 0xff;
-        Port_WsTileSet_Update(REGION_IS_EU ? &sSetEu : &sSetUsa, loaded);
+        static const PortWsTileSet sSetUsa = { 1, { gUnk_08108050 }, MinishVillage_WsWriteGroup,
+                                               MinishVillage_WsPaletteGroup };
+        static const PortWsTileSet sSetEu = { 1, { gUnk_08108050_eu }, MinishVillage_WsWriteGroup,
+                                              MinishVillage_WsPaletteGroup };
+        const u8 loaded =
+            this->unk_20 == gRoomVars.graphicsGroups[0] && super->timer >= 8 ? (u8)this->unk_20 : 0xff;
+        Port_WsTileSet_Update(REGION_IS_EU ? &sSetEu : &sSetUsa, &loaded);
     }
 #endif
 }
