@@ -10,6 +10,9 @@
 #include "functions.h"
 #include "game.h"
 #include "main.h"
+#ifdef TMC_VITA
+#include "port_ws_tileset.h"
+#endif
 
 void sub_08057E30(void*);
 bool32 sub_08057E40(MinishVillageTileSetManager*);
@@ -183,6 +186,16 @@ void MinishVillageTileSetManager_Main(MinishVillageTileSetManager* this) {
     } else {
         MinishVillageTileSetManager_Main_USA(this);
     }
+#ifdef TMC_VITA
+    {
+        /* Wide views can show parts of two tile sets at once: tell the
+         * renderer which set VRAM holds (0xff while one is still loading). */
+        static const PortWsTileSet sSetUsa = { gUnk_08108050, gUnk_081080A4, gUnk_081081E4, 5 };
+        static const PortWsTileSet sSetEu = { gUnk_08108050_eu, gUnk_081080A4_eu, gUnk_081081E4, 5 };
+        const u32 loaded = this->unk_20 == gRoomVars.graphicsGroups[0] && super->timer >= 8 ? this->unk_20 : 0xff;
+        Port_WsTileSet_Update(REGION_IS_EU ? &sSetEu : &sSetUsa, loaded);
+    }
+#endif
 }
 #else
 void MinishVillageTileSetManager_Main(MinishVillageTileSetManager* this) {

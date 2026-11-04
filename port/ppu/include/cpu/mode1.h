@@ -90,6 +90,21 @@ extern int virtuappu_mode1_ws_shadow_base_tile[MODE1_GBA_BG_COUNT];
 extern uint8_t virtuappu_mode1_ws_shadow_cols[MODE1_GBA_BG_COUNT];
 extern uint8_t virtuappu_mode1_ws_shadow_stride[MODE1_GBA_BG_COUNT];
 extern int virtuappu_mode1_ws_full_view;
+
+/* Per-cell tile-set context for shadow rows (Vita port). Some areas (the
+ * Minish village) swap the whole BG tile set and palette depending on which
+ * part of the map is on screen; a 240x160 view never shows two of those
+ * parts at once, a wider view can. ws_alt_ctx[bg] (NULL = off) runs parallel
+ * to ws_shadow[bg] (same index and stride): 0 renders the cell from VRAM and
+ * palette RAM as usual, k = 1..MODE1_WS_ALT_MAX from ws_alt_vram[k-1] (a BG
+ * VRAM image, MODE1_WS_ALT_VRAM_SIZE bytes) and ws_alt_bg_palette[k-1]
+ * (256 colours). Palette banks of context k are banks 16k..16k+15 of the
+ * renderer's extended palette tables. */
+#define MODE1_WS_ALT_MAX 3
+#define MODE1_WS_ALT_VRAM_SIZE 0x10000
+extern const uint8_t* virtuappu_mode1_ws_alt_ctx[MODE1_GBA_BG_COUNT];
+extern const uint8_t* virtuappu_mode1_ws_alt_vram[MODE1_WS_ALT_MAX];
+extern const uint16_t* virtuappu_mode1_ws_alt_bg_palette[MODE1_WS_ALT_MAX];
 extern bool virtuappu_mode1_bg3_hdma_native_bounds;
 /* Vita: draw an HDMA-driven BG3 overlay over the whole frame (stretched
  * per-line values) instead of clipping it to the GBA rectangle. */

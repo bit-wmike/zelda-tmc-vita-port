@@ -48,6 +48,9 @@ uint8_t virtuappu_mode1_ws_shadow_stride[MODE1_GBA_BG_COUNT] = {
     MODE1_WS_SHADOW_WIDE_COLS, MODE1_WS_SHADOW_WIDE_COLS,
 };
 int virtuappu_mode1_ws_full_view = 0;
+const uint8_t* virtuappu_mode1_ws_alt_ctx[MODE1_GBA_BG_COUNT] = { NULL, NULL, NULL, NULL };
+const uint8_t* virtuappu_mode1_ws_alt_vram[MODE1_WS_ALT_MAX] = { NULL };
+const uint16_t* virtuappu_mode1_ws_alt_bg_palette[MODE1_WS_ALT_MAX] = { NULL };
 bool virtuappu_mode1_bg3_hdma_native_bounds = false;
 bool virtuappu_mode1_bg3_hdma_extend = false;
 bool virtuappu_mode1_bg3_repeat = false;
@@ -577,13 +580,25 @@ uint32_t virtuappu_mode1_io_read32(uint16_t offset) {
  * with ZERO added branches. Built by PublishPaletteLuts before the parallel
  * scanline render; SHARED read-only during it (same contract as ws_shadow).
  * Byte-exact: LUT[i] == rgb555_to_abgr(palette[i]) by construction. */
-static uint32_t mode1_bg_abgr_lut[MODE1_PALETTE_COLORS];
+/* BG tables cover the palette RAM (banks 0..15) plus one 16-bank copy per
+ * tile-set context (MODE1_WS_ALT_MAX, see mode1.h). Context 0 is untouched. */
+#define MODE1_BG_LUT_BANKS (16 * (1 + MODE1_WS_ALT_MAX))
+#define MODE1_BG_LUT_COLORS (MODE1_PALETTE_COLORS * (1 + MODE1_WS_ALT_MAX))
+/* Compact compositor codes: BG layer + 1 above MODE1_CODE_LAYER_SHIFT, the
+ * palette token (extended palette index + 1, 0 = transparent) below it. */
+#define MODE1_CODE_LAYER_SHIFT 12u
+#define MODE1_CODE_TOKEN_MASK 0xFFFu
+_Static_assert(MODE1_BG_LUT_COLORS < (1 << MODE1_CODE_LAYER_SHIFT), "tokens must fit below the layer bits");
+static uint32_t mode1_bg_abgr_lut[MODE1_BG_LUT_COLORS];
 /* Token-indexed copy: [0] = backdrop (palette 0), [t] = mode1_bg_abgr_lut[t - 1]. */
-static uint32_t mode1_bg_abgr_lut1[MODE1_PALETTE_COLORS + 1];
+static uint32_t mode1_bg_abgr_lut1[MODE1_BG_LUT_COLORS + 1];
+/* Raw BGR555 of every extended palette entry (magenta-key checks). */
+static uint16_t mode1_bg_palette_ext[MODE1_BG_LUT_COLORS];
+static uint16_t mode1_bg_alt_palette_cache[MODE1_WS_ALT_MAX][MODE1_PALETTE_COLORS];
 static uint32_t mode1_obj_abgr_lut[MODE1_PALETTE_COLORS];
-static uint64_t mode1_bg_4bpp_pair_lut[16][256];
-static uint32_t mode1_bg_pair_palette_cache[MODE1_PALETTE_COLORS];
-static uint32_t mode1_bg_4bpp_token_pair_lut[16][256];
+static uint64_t mode1_bg_4bpp_pair_lut[MODE1_BG_LUT_BANKS][256];
+static uint32_t mode1_bg_pair_palette_cache[MODE1_BG_LUT_COLORS];
+static uint32_t mode1_bg_4bpp_token_pair_lut[MODE1_BG_LUT_BANKS][256];
 static bool mode1_bg_token_pairs_initialized;
 static uint16_t mode1_bg_palette_source_cache[MODE1_PALETTE_COLORS];
 static uint16_t mode1_obj_palette_source_cache[MODE1_PALETTE_COLORS];
@@ -621,17 +636,25 @@ void virtuappu_mode1_set_color_correction(bool enabled) {
  * "transparent in the shadow map" key (0x7C1F). Lets the shadow-backed
  * (Full View / wide) tile rows use the same pair-at-a-time token path as
  * native VRAM rows; the per-pixel loop it replaces skipped exactly these. */
-static uint16_t mode1_bg_magenta_mask[16];
+static uint16_t mode1_bg_magenta_mask[MODE1_BG_LUT_BANKS];
 #ifdef MODE1_NEON
 /* The same masks as byte tables (0xFF = magenta) for vtbl lookups. */
-static uint8_t mode1_bg_magenta_tab[16][16];
+static uint8_t mode1_bg_magenta_tab[MODE1_BG_LUT_BANKS][16];
 #endif
 
 static void virtuappu_mode1_publish_palette_luts(void) {
-    for (unsigned bank = 0; bank < 16u; ++bank) {
+    /* Extended raw palette: RAM, then each tile-set context's palette (or a
+     * copy of RAM when the context is unused). */
+    memcpy(mode1_bg_palette_ext, mode1_memory.bg_palette, MODE1_PALETTE_COLORS * sizeof(uint16_t));
+    for (unsigned k = 0; k < MODE1_WS_ALT_MAX; ++k) {
+        const uint16_t* src = virtuappu_mode1_ws_alt_bg_palette[k];
+        memcpy(&mode1_bg_palette_ext[(k + 1u) * MODE1_PALETTE_COLORS], src != NULL ? src : mode1_memory.bg_palette,
+               MODE1_PALETTE_COLORS * sizeof(uint16_t));
+    }
+    for (unsigned bank = 0; bank < MODE1_BG_LUT_BANKS; ++bank) {
         uint16_t mask = 0u;
         for (unsigned i = 1; i < 16u; ++i) {
-            if ((mode1_memory.bg_palette[bank * 16u + i] & 0x7FFFu) == 0x7C1Fu) mask |= (uint16_t)(1u << i);
+            if ((mode1_bg_palette_ext[bank * 16u + i] & 0x7FFFu) == 0x7C1Fu) mask |= (uint16_t)(1u << i);
         }
         mode1_bg_magenta_mask[bank] = mask;
 #ifdef MODE1_NEON
@@ -645,13 +668,28 @@ static void virtuappu_mode1_publish_palette_luts(void) {
     const bool obj_changed = correction_changed || memcmp(mode1_obj_palette_source_cache, mode1_memory.obj_palette,
                                     sizeof(mode1_obj_palette_source_cache)) != 0;
 
+    bool alt_changed = false;
+    for (unsigned k = 0; k < MODE1_WS_ALT_MAX; ++k) {
+        const uint16_t* const src = &mode1_bg_palette_ext[(k + 1u) * MODE1_PALETTE_COLORS];
+        if (!correction_changed && mode1_palette_source_initialized &&
+            memcmp(mode1_bg_alt_palette_cache[k], src, sizeof(mode1_bg_alt_palette_cache[k])) == 0)
+            continue;
+        for (int i = 0; i < MODE1_PALETTE_COLORS; ++i) {
+            mode1_bg_abgr_lut[(k + 1u) * MODE1_PALETTE_COLORS + (unsigned)i] =
+                virtuappu_mode1_rgb555_to_abgr8888(src[i]);
+        }
+        memcpy(mode1_bg_alt_palette_cache[k], src, sizeof(mode1_bg_alt_palette_cache[k]));
+        alt_changed = true;
+    }
     if (bg_changed) {
         for (int i = 0; i < MODE1_PALETTE_COLORS; ++i) {
             mode1_bg_abgr_lut[i] = virtuappu_mode1_rgb555_to_abgr8888(mode1_memory.bg_palette[i]);
         }
+        memcpy(mode1_bg_palette_source_cache, mode1_memory.bg_palette, sizeof(mode1_bg_palette_source_cache));
+    }
+    if (bg_changed || alt_changed) {
         mode1_bg_abgr_lut1[0] = mode1_bg_abgr_lut[0];
         memcpy(&mode1_bg_abgr_lut1[1], mode1_bg_abgr_lut, sizeof(mode1_bg_abgr_lut));
-        memcpy(mode1_bg_palette_source_cache, mode1_memory.bg_palette, sizeof(mode1_bg_palette_source_cache));
     }
     if (obj_changed) {
         for (int i = 0; i < MODE1_PALETTE_COLORS; ++i) {
@@ -663,7 +701,9 @@ static void virtuappu_mode1_publish_palette_luts(void) {
     mode1_palette_source_color_correction = mode1_color_correction;
 
     if (!mode1_old3ds_profile) {
-        for (unsigned bank = 0; (bg_changed || !mode1_bg_pair_palette_initialized) && bank < 16u; ++bank) {
+        for (unsigned bank = 0; (bg_changed || alt_changed || !mode1_bg_pair_palette_initialized) &&
+                                bank < MODE1_BG_LUT_BANKS;
+             ++bank) {
             const unsigned paletteBase = bank * 16u;
             if (mode1_bg_pair_palette_initialized &&
                 memcmp(&mode1_bg_pair_palette_cache[paletteBase], &mode1_bg_abgr_lut[paletteBase],
@@ -683,7 +723,7 @@ static void virtuappu_mode1_publish_palette_luts(void) {
     }
 
     if (!mode1_old3ds_profile && !mode1_bg_token_pairs_initialized) {
-        for (unsigned bank = 0; bank < 16u; ++bank) {
+        for (unsigned bank = 0; bank < MODE1_BG_LUT_BANKS; ++bank) {
             const unsigned paletteBase = bank * 16u;
             for (unsigned packed = 0; packed < 256u; ++packed) {
                 const unsigned lo = packed & 0x0Fu;
@@ -847,6 +887,27 @@ static inline int mode1_shadow_index_for_x(int sample_x, int scroll_x, int tile_
     return (sample_x + (scroll_x & 7)) >> 3;
 }
 
+/* Tile-set context of a shadow cell (see mode1.h): character data source,
+ * its size, and the first extended palette bank. Context 0 = VRAM/RAM. */
+typedef struct Mode1TileSource {
+    const uint8_t* vram;
+    uint32_t vram_size;
+    unsigned bank_offset;
+} Mode1TileSource;
+
+static inline Mode1TileSource mode1_tile_source(const uint8_t* alt, size_t cell) {
+    Mode1TileSource src = { mode1_memory.vram, MODE1_VRAM_SIZE, 0u };
+    if (alt != NULL) {
+        const unsigned ctx = alt[cell];
+        if (ctx != 0u && ctx <= MODE1_WS_ALT_MAX && virtuappu_mode1_ws_alt_vram[ctx - 1u] != NULL) {
+            src.vram = virtuappu_mode1_ws_alt_vram[ctx - 1u];
+            src.vram_size = MODE1_WS_ALT_VRAM_SIZE;
+            src.bank_offset = ctx * 16u;
+        }
+    }
+    return src;
+}
+
 /* ABGR variant of the tile renderer: writes only opaque pixels (callers
  * paint layers on top of each other). Destination pixels [dst_begin,
  * dst_end) sample map column (x - dst_offset); the shadow/clip decisions use
@@ -864,6 +925,7 @@ static void mode1_render_text_bg_native_4bpp_range(int bg_index, uint32_t char_b
     int shadow_stride = 0;
     const bool shadow_active = virtuappu_mode1_ws_shadow[bg_index] != NULL &&
                                mode1_shadow_geometry_for_bg(bg_index, &shadow_cols, &shadow_stride);
+    const uint8_t* const alt_ctx = virtuappu_mode1_ws_alt_ctx[bg_index];
     const int sample_end = dst_end - dst_offset;
 
     for (int sx = dst_begin - dst_offset; sx < sample_end;) {
@@ -889,13 +951,14 @@ static void mode1_render_text_bg_native_4bpp_range(int bg_index, uint32_t char_b
         const bool use_shadow = (mode1_shadow_covers_full_view() || x >= MODE1_GBA_BG_CLIP_X) &&
                                 map_width_tiles < 64 &&
                                 shadow_active;
+        Mode1TileSource tsrc = { mode1_memory.vram, MODE1_VRAM_SIZE, 0u };
         if (use_shadow) {
             const int shadow_index = mode1_shadow_index_for_x(
                 sx, scroll_x, tile_col, virtuappu_mode1_ws_shadow_base_tile[bg_index]);
-            entry.raw = shadow_index >= 0 && shadow_index < shadow_cols
-                            ? virtuappu_mode1_ws_shadow[bg_index][(size_t)local_row * (size_t)shadow_stride +
-                                                                 (size_t)shadow_index]
-                            : 0u;
+            const size_t cell = (size_t)local_row * (size_t)shadow_stride + (size_t)shadow_index;
+            const bool in_shadow = shadow_index >= 0 && shadow_index < shadow_cols;
+            entry.raw = in_shadow ? virtuappu_mode1_ws_shadow[bg_index][cell] : 0u;
+            if (in_shadow) tsrc = mode1_tile_source(alt_ctx, cell);
         } else {
             const uint32_t map_addr =
                 screen_base + (uint32_t)screen_block_index * 0x800u + (uint32_t)(local_row * 32 + local_col) * 2u;
@@ -904,13 +967,13 @@ static void mode1_render_text_bg_native_4bpp_range(int bg_index, uint32_t char_b
         const int tile_pixel_y = mode1_tile_vflip(entry) ? 7 - pixel_y : pixel_y;
         const uint32_t row_base = char_base + (uint32_t)mode1_tile_index(entry) * 32u + (uint32_t)tile_pixel_y * 4u;
 
-        if (row_base + 3u < MODE1_VRAM_SIZE) {
-            const uint32_t packed_row = mode1_read_tile_row_4bpp(mode1_memory.vram + row_base);
+        if (row_base + 3u < tsrc.vram_size) {
+            const uint32_t packed_row = mode1_read_tile_row_4bpp(tsrc.vram + row_base);
             if (packed_row == 0u) {
                 sx += run;
                 continue;
             }
-            const size_t palette_base = (size_t)mode1_tile_palette(entry) * 16u;
+            const size_t palette_base = ((size_t)mode1_tile_palette(entry) + tsrc.bank_offset) * 16u;
             const bool hflip = mode1_tile_hflip(entry);
             if (run == 8) {
                 /* Whole tile, two pixels per lookup; shadow rows drop the
@@ -959,7 +1022,7 @@ static void mode1_render_text_bg_native_4bpp_range(int bg_index, uint32_t char_b
                 const uint8_t color_index = (uint8_t)((packed_row >> (tile_pixel_x * 4)) & 0x0Fu);
                 if (color_index == 0u) continue;
                 if (use_shadow &&
-                    (mode1_memory.bg_palette[palette_base + color_index] & 0x7FFFu) == 0x7C1Fu) {
+                    (mode1_bg_palette_ext[palette_base + color_index] & 0x7FFFu) == 0x7C1Fu) {
                     continue;
                 }
                 line_buffer[x + i] = mode1_bg_abgr_lut[palette_base + color_index];
@@ -1067,6 +1130,7 @@ static void mode1_render_text_bg_native_tokens_range(int bg_index, int line, uin
     int shadow_stride = 0;
     const bool shadow_active = virtuappu_mode1_ws_shadow[bg_index] != NULL &&
                                mode1_shadow_geometry_for_bg(bg_index, &shadow_cols, &shadow_stride);
+    const uint8_t* const alt_ctx = virtuappu_mode1_ws_alt_ctx[bg_index];
     const int sample_end = dst_end - dst_offset;
 
     for (int sx = dst_begin - dst_offset; sx < sample_end;) {
@@ -1090,27 +1154,28 @@ static void mode1_render_text_bg_native_tokens_range(int bg_index, int line, uin
         const bool use_shadow = (mode1_shadow_covers_full_view() || x >= MODE1_GBA_BG_CLIP_X) &&
                                 map_width_tiles < 64 &&
                                 shadow_active;
+        Mode1TileSource tsrc = { mode1_memory.vram, MODE1_VRAM_SIZE, 0u };
         if (use_shadow) {
             const int shadow_index = mode1_shadow_index_for_x(
                 sx, scroll_x, tile_col, virtuappu_mode1_ws_shadow_base_tile[bg_index]);
-            entry.raw = shadow_index >= 0 && shadow_index < shadow_cols
-                            ? virtuappu_mode1_ws_shadow[bg_index][(size_t)local_row * (size_t)shadow_stride +
-                                                                 (size_t)shadow_index]
-                            : 0u;
+            const size_t cell = (size_t)local_row * (size_t)shadow_stride + (size_t)shadow_index;
+            const bool in_shadow = shadow_index >= 0 && shadow_index < shadow_cols;
+            entry.raw = in_shadow ? virtuappu_mode1_ws_shadow[bg_index][cell] : 0u;
+            if (in_shadow) tsrc = mode1_tile_source(alt_ctx, cell);
         } else {
             entry.raw = (uint16_t)mode1_memory.vram[map_addr] | ((uint16_t)mode1_memory.vram[map_addr + 1u] << 8u);
         }
         const int tile_pixel_y = mode1_tile_vflip(entry) ? 7 - pixel_y : pixel_y;
         const uint32_t row_base = char_base + (uint32_t)mode1_tile_index(entry) * 32u + (uint32_t)tile_pixel_y * 4u;
 
-        if (row_base + 3u < MODE1_VRAM_SIZE) {
-            const uint32_t packed_row = mode1_read_tile_row_4bpp(mode1_memory.vram + row_base);
+        if (row_base + 3u < tsrc.vram_size) {
+            const uint32_t packed_row = mode1_read_tile_row_4bpp(tsrc.vram + row_base);
             if (packed_row == 0u) {
                 sx += run;
                 continue;
             }
 
-            const unsigned palette_bank = mode1_tile_palette(entry);
+            const unsigned palette_bank = mode1_tile_palette(entry) + tsrc.bank_offset;
             const bool hflip = mode1_tile_hflip(entry);
             if (run == 8) {
                 /* Whole tile: two pixels per lookup. Shadow rows drop the
@@ -1149,7 +1214,7 @@ static void mode1_render_text_bg_native_tokens_range(int bg_index, int line, uin
                 const uint8_t color_index = (uint8_t)((packed_row >> (tile_pixel_x * 4)) & 0x0Fu);
                 if (color_index != 0u) {
                     if (use_shadow &&
-                        (mode1_memory.bg_palette[palette_base + color_index] & 0x7FFFu) == 0x7C1Fu) {
+                        (mode1_bg_palette_ext[palette_base + color_index] & 0x7FFFu) == 0x7C1Fu) {
                         continue;
                     }
                     tokens[x + i] = (uint16_t)(palette_base + color_index + 1u);
@@ -1175,6 +1240,7 @@ static void mode1_render_text_bg_compact_tokens(int bg_index, int line, uint16_t
     const bool shadow_active = map_width_tiles < 64 &&
                                virtuappu_mode1_ws_shadow[bg_index] != NULL &&
                                mode1_shadow_geometry_for_bg(bg_index, &shadow_cols, &shadow_stride);
+    const uint8_t* const alt_ctx = virtuappu_mode1_ws_alt_ctx[bg_index];
     const bool repeat_full_view_overlay = bg_index == 3 &&
         (mode1_shadow_covers_full_view() || virtuappu_mode1_bg3_repeat);
     const bool native_bounds = bg_index == 3 && mode1_bg3_native_bounds_active();
@@ -1279,15 +1345,16 @@ next_pass:
         const int tile_col = src_x >> 3;
         const int pixel_x = src_x & 7;
         Mode1TilemapEntry entry;
+        Mode1TileSource tsrc = { mode1_memory.vram, MODE1_VRAM_SIZE, 0u };
         const bool use_shadow = shadow_active &&
                                 (mode1_shadow_covers_full_view() || x >= MODE1_GBA_BG_CLIP_X);
         if (use_shadow) {
             const int shadow_index = mode1_shadow_index_for_x(
                 sample_x, scroll_x, tile_col, virtuappu_mode1_ws_shadow_base_tile[bg_index]);
-            entry.raw = shadow_index >= 0 && shadow_index < shadow_cols
-                            ? virtuappu_mode1_ws_shadow[bg_index][(size_t)local_row * (size_t)shadow_stride +
-                                                                 (size_t)shadow_index]
-                            : 0u;
+            const size_t cell = (size_t)local_row * (size_t)shadow_stride + (size_t)shadow_index;
+            const bool in_shadow = shadow_index >= 0 && shadow_index < shadow_cols;
+            entry.raw = in_shadow ? virtuappu_mode1_ws_shadow[bg_index][cell] : 0u;
+            if (in_shadow) tsrc = mode1_tile_source(alt_ctx, cell);
         } else {
             const int screen_block_x = tile_col >> 5;
             const int screen_block_index = screen_block_x + screen_block_y * blocks_per_row;
@@ -1301,15 +1368,15 @@ next_pass:
         const int tile_pixel_y = mode1_tile_vflip(entry) ? 7 - pixel_y : pixel_y;
         const uint32_t byte_addr = char_base + (uint32_t)mode1_tile_index(entry) * 32u + (uint32_t)tile_pixel_y * 4u +
                                    (uint32_t)(tile_pixel_x >> 1);
-        if (byte_addr >= MODE1_VRAM_SIZE)
+        if (byte_addr >= tsrc.vram_size)
             continue;
-        const uint8_t packed = mode1_memory.vram[byte_addr];
+        const uint8_t packed = tsrc.vram[byte_addr];
         const uint8_t color_index = (tile_pixel_x & 1) != 0 ? packed >> 4u : packed & 0x0Fu;
         if (color_index == 0u)
             continue;
-        const unsigned palette_index = (unsigned)mode1_tile_palette(entry) * 16u + color_index;
+        const unsigned palette_index = ((unsigned)mode1_tile_palette(entry) + tsrc.bank_offset) * 16u + color_index;
         if (use_shadow &&
-            (mode1_memory.bg_palette[palette_index] & 0x7FFFu) == 0x7C1Fu) {
+            (mode1_bg_palette_ext[palette_index] & 0x7FFFu) == 0x7C1Fu) {
             continue;
         }
         tokens[x] = (uint16_t)(palette_index + 1u);
@@ -1408,6 +1475,7 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
     }
     const int ws_shadow_base = virtuappu_mode1_ws_shadow_base_tile[bg_index];
     uint16_t* const ws_shadow = virtuappu_mode1_ws_shadow[bg_index];
+    const uint8_t* const ws_alt_ctx = virtuappu_mode1_ws_alt_ctx[bg_index];
     const bool ws_hud_right_anchor =
         (bg_index == 0) && (virtuappu_mode1_ws_hud_right_anchor != 0) && (frame_width > MODE1_GBA_BG_CLIP_X);
     const int ws_hud_right_dst_x = frame_width - (MODE1_GBA_BG_CLIP_X - MODE1_WS_HUD_RIGHT_NATIVE_X);
@@ -1484,6 +1552,7 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
     int bg_tpy = 0;
     uint32_t bg_row_base = 0u;
     size_t bg_pal_bank = 0u;
+    Mode1TileSource bg_src = { mode1_memory.vram, MODE1_VRAM_SIZE, 0u };
 
     /* x / mosaic_h without a library division per pixel (see mode1_mosaic_div). */
     const uint32_t mosaic_h_recip = (65536u + (uint32_t)mosaic_h - 1u) / (uint32_t)mosaic_h;
@@ -1507,10 +1576,14 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
         int cache_key = cache_use_shadow ? ((cache_shadow_idx << 1) | 1) : (tile_col << 1);                            \
         if (cache_key != bg_cache_key) {                                                                               \
             bg_cache_key = cache_key;                                                                                  \
+            bg_src.vram = mode1_memory.vram;                                                                           \
+            bg_src.vram_size = MODE1_VRAM_SIZE;                                                                        \
+            bg_src.bank_offset = 0u;                                                                                   \
             if (cache_use_shadow) {                                                                                    \
-                bg_tile_entry.raw = (cache_shadow_idx >= 0 && cache_shadow_idx < ws_shadow_cols)                     \
-                                        ? ws_shadow[(size_t)local_row * (size_t)ws_shadow_stride + cache_shadow_idx]  \
-                                        : (uint16_t)0u;                                                                \
+                const size_t cell = (size_t)local_row * (size_t)ws_shadow_stride + (size_t)cache_shadow_idx;          \
+                const bool in_shadow = cache_shadow_idx >= 0 && cache_shadow_idx < ws_shadow_cols;                     \
+                bg_tile_entry.raw = in_shadow ? ws_shadow[cell] : (uint16_t)0u;                                        \
+                if (in_shadow) bg_src = mode1_tile_source(ws_alt_ctx, cell);                                           \
             } else {                                                                                                   \
                 int screen_block_x = tile_col / 32;                                                                    \
                 int screen_block_index = screen_block_x + screen_block_y * blocks_per_row;                             \
@@ -1527,21 +1600,21 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
             } else {                                                                                                   \
                 bg_row_base = char_base + (uint32_t)mode1_tile_index(bg_tile_entry) * 32u + (uint32_t)bg_tpy * 4u;     \
             }                                                                                                          \
-            bg_pal_bank = (size_t)mode1_tile_palette(bg_tile_entry) * 16u;                                             \
+            bg_pal_bank = ((size_t)mode1_tile_palette(bg_tile_entry) + bg_src.bank_offset) * 16u;                     \
         }                                                                                                              \
         int tile_pixel_x = bg_hflip ? (7 - pixel_x) : pixel_x;                                                         \
         uint8_t color_index;                                                                                           \
         if (bpp8) {                                                                                                    \
             uint32_t addr = bg_row_base + (uint32_t)tile_pixel_x;                                                      \
-            color_index = (addr < MODE1_VRAM_SIZE) ? mode1_memory.vram[addr] : 0u;                                     \
+            color_index = (addr < bg_src.vram_size) ? bg_src.vram[addr] : 0u;                                          \
         } else {                                                                                                       \
             uint32_t addr = bg_row_base + (uint32_t)(tile_pixel_x / 2);                                                \
-            uint8_t packed = (addr < MODE1_VRAM_SIZE) ? mode1_memory.vram[addr] : 0u;                                  \
+            uint8_t packed = (addr < bg_src.vram_size) ? bg_src.vram[addr] : 0u;                                       \
             color_index = (tile_pixel_x & 1) ? (packed >> 4u) : (packed & 0x0Fu);                                      \
         }                                                                                                              \
         if (color_index != 0u) {                                                                                       \
-            size_t pal_idx = bpp8 ? (size_t)color_index : (bg_pal_bank + color_index);                                 \
-            if (!(cache_use_shadow && (mode1_memory.bg_palette[pal_idx] & 0x7FFFu) == 0x7C1Fu)) {                      \
+            size_t pal_idx = bpp8 ? (size_t)bg_src.bank_offset * 16u + color_index : (bg_pal_bank + color_index);      \
+            if (!(cache_use_shadow && (mode1_bg_palette_ext[pal_idx] & 0x7FFFu) == 0x7C1Fu)) {                         \
                 line_buffer[x] = mode1_bg_abgr_lut[pal_idx];                                                           \
                 if (priority_buffer != NULL) {                                                                         \
                     priority_buffer[x] = priority;                                                                     \
@@ -2691,18 +2764,18 @@ static inline __attribute__((always_inline)) uint32_t mode1_cc_resolve(const Mod
 
     if (visible_obj && obj_color != 0u) {
         const unsigned obj_p = cp->obj_priority[x];
-        if (tc == 0u || cp->bg_prio[(tc >> 9u) - 1u] >= obj_p) {
+        if (tc == 0u || cp->bg_prio[(tc >> MODE1_CODE_LAYER_SHIFT) - 1u] >= obj_p) {
             top_color = obj_color;
             top_layer = 4u;
             bottom_code = tc;
         } else {
-            top_color = bg_lut[(tc & 0x1FFu) - 1u];
-            top_layer = (tc >> 9u) - 1u;
-            bottom_code = (bc == 0u || cp->bg_prio[(bc >> 9u) - 1u] >= obj_p) ? 0xFFFFu : bc;
+            top_color = bg_lut[(tc & MODE1_CODE_TOKEN_MASK) - 1u];
+            top_layer = (tc >> MODE1_CODE_LAYER_SHIFT) - 1u;
+            bottom_code = (bc == 0u || cp->bg_prio[(bc >> MODE1_CODE_LAYER_SHIFT) - 1u] >= obj_p) ? 0xFFFFu : bc;
         }
     } else if (tc != 0u) {
-        top_color = bg_lut[(tc & 0x1FFu) - 1u];
-        top_layer = (tc >> 9u) - 1u;
+        top_color = bg_lut[(tc & MODE1_CODE_TOKEN_MASK) - 1u];
+        top_layer = (tc >> MODE1_CODE_LAYER_SHIFT) - 1u;
         bottom_code = bc;
     } else {
         top_color = cp->backdrop;
@@ -2712,9 +2785,9 @@ static inline __attribute__((always_inline)) uint32_t mode1_cc_resolve(const Mod
 
     if (allow_sfx) {
         const unsigned bottom_layer =
-            bottom_code == 0xFFFFu ? 4u : (bottom_code != 0u ? (bottom_code >> 9u) - 1u : 5u);
+            bottom_code == 0xFFFFu ? 4u : (bottom_code != 0u ? (bottom_code >> MODE1_CODE_LAYER_SHIFT) - 1u : 5u);
 #define MODE1_CC_BOTTOM_COLOR() \
-    (bottom_code == 0xFFFFu ? obj_color : (bottom_code != 0u ? bg_lut[(bottom_code & 0x1FFu) - 1u] : cp->backdrop))
+    (bottom_code == 0xFFFFu ? obj_color : (bottom_code != 0u ? bg_lut[(bottom_code & MODE1_CODE_TOKEN_MASK) - 1u] : cp->backdrop))
         if (top_layer == 4u && virtuappu_mode1_obj_semitrans[x]) {
             if (mode1_is_second_target(cp->bldcnt, (int)bottom_layer)) {
                 top_color = mode1_alpha_blend_lut(cp->blend_lut, top_color, MODE1_CC_BOTTOM_COLOR());
@@ -2787,7 +2860,7 @@ static inline __attribute__((always_inline)) void mode1_compact_composite(const 
 
     for (int k = c.n - 1; k >= 0; --k) {
         const uint16_t* const tok = c.tok[k];
-        const uint16_t layer_bits = (uint16_t)((c.bg[k] + 1u) << 9u);
+        const uint16_t layer_bits = (uint16_t)((c.bg[k] + 1u) << MODE1_CODE_LAYER_SHIFT);
         if (windowed) {
             const uint8_t bit = c.bit[k];
             for (int x = 0; x < frame_width; ++x) {
@@ -2818,7 +2891,7 @@ static inline __attribute__((always_inline)) void mode1_compact_composite(const 
     }
 
     if (!windowed && (c.effect == MODE1_BLEND_NONE || c.effect == MODE1_BLEND_ALPHA)) {
-        /* first/second blend target per code layer (code >> 9: 0 = backdrop) */
+        /* first/second blend target per code layer (code >> LAYER_SHIFT: 0 = backdrop) */
         uint8_t first_tab[8] = { 0 };
         uint8_t second_tab[8] = { 0 };
         for (unsigned i = 0; i < 5u; ++i) {
@@ -2840,15 +2913,15 @@ static inline __attribute__((always_inline)) void mode1_compact_composite(const 
                 color = mode1_cc_resolve(&c, x, tc, bc, obj_color, true, true);
                 f = 0u;
             } else {
-                color = lut1[tc & 0x1FFu];
-                f = first_tab[tc >> 9u] & second_tab[bc >> 9u];
+                color = lut1[tc & MODE1_CODE_TOKEN_MASK];
+                f = first_tab[tc >> MODE1_CODE_LAYER_SHIFT] & second_tab[bc >> MODE1_CODE_LAYER_SHIFT];
             }
             if (x >= MODE1_GBA_BG_CLIP_X && tc == 0u) {
                 color = 0xFF000000u;
                 f = 0u;
             }
             out_row[x] = color;
-            bot_col[x] = lut1[bc & 0x1FFu];
+            bot_col[x] = lut1[bc & MODE1_CODE_TOKEN_MASK];
             flag[x] = f;
             any_flag |= f;
         }

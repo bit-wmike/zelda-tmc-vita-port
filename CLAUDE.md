@@ -1,4 +1,4 @@
-# CLAUDE.md – Übergabe für Claude Code (Stand v0.1.9, 04.11.2026)
+# CLAUDE.md – Übergabe für Claude Code (Stand v0.1.10, 04.11.2026)
 
 Diese Datei liest Claude Code beim Start automatisch. Sie fasst alles zusammen, was
 für die Weiterarbeit am **PS-Vita-Port von Zelda: The Minish Cap** nötig ist.
@@ -41,6 +41,7 @@ für die Weiterarbeit am **PS-Vita-Port von Zelda: The Minish Cap** nötig ist.
 - Weitsicht-Logik: `port/port_linked_stubs.c` (Kamera, Fallback, HUD-Breite),
   `port/port_3ds_full_view_policy.*` (Entscheidung + Fallback-Gründe), Renderer
   `port/ppu/src/mode1.c` (Schatten-Tilemaps, NEON, `-O3`).
+- Kachelsatz-Kontexte (Minish-Dorf): `port/port_ws_tileset.*` + `virtuappu_mode1_ws_alt_*` in `mode1.c`.
 - Overlay/Karte: `port/port_second_screen.c`, `port/port_second_screen_worldmap.c`.
 - Doku: `README.md` (Englisch), `platform/vita/README.md` (deutsche Anleitung, Steuerung,
   Test-Schalter), `COPYRIGHT.md`, `THIRD-PARTY-LICENSES.md`.
@@ -131,14 +132,24 @@ Prüfregeln vor jeder Version:
     Zoom 2×/3× (R/L, „ZOOM“), Verschieben per Touch/Steuerkreuz/Stick, Tipp auf Gebiet springt hin.
   - Vita-Linker-Skript (s. o.), neue Host-Hooks (TMC_WARP_AT, TMC_VIEW_LOG, TMC_DETAIL_DUMP, TMC_BG0_DUMP).
 
+- 0.1.10: **Fremde Kacheln im Dorf der Minish behoben.** Ursache war nicht die
+  Schatten-Tilemap: `minishVillageTileSetManager.c` tauscht je nach sichtbarer Region den
+  ganzen BG-Kachelsatz (VRAM 0x0000–0x3FFF + 0x8000–0xBFFF) und die Paletten 4–14
+  (5 Gruppen). 240×160 zeigt nie zwei Gruppen, 400×240 schon. Lösung: pro Schattenzelle
+  ein Kontext (`virtuappu_mode1_ws_alt_ctx`, 0 = VRAM, 1..3 = Kachelsatz aus ROM +
+  Palette, erweiterte Palettenbänke 16k..; Compositor-Codes: Layer jetzt ab Bit 12).
+  Zelle→Gruppe: Region-Rechteck, sonst die Gruppe, die der GBA für 240×160-Ansichten mit
+  dieser Zelle lädt (`BuildCellGroups`). Ohne Kontexte bitgleich (Regression + Fuzzer).
+  Host-Repro: `TMC_BOOT=1,0,158,78` bzw. `1,0,270,1d0`, `1,0,1f0,a0` (vorher Müll/Balken).
+  Bootstrap lädt libelf jetzt aus vitasdk/artifacts (deb.debian.org ist in Claude-Cloud
+  gesperrt). Hinweis: Nach `TMC_BOOT` reagiert Link nicht auf Skript-Tasten (synthetischer
+  Spielstand) – für Lauftests Mikes Quick-State nehmen.
+
 ## Offene Punkte (nächste Schritte)
-1. **Fremde Kacheln in der Weitsicht** (Mikes Screenshots vom 19.10., noch mit 0.1.8):
-   im Dorf der Minish (Area 1) große Bereiche falscher Kacheln in der rechten Bildhälfte,
-   dunkle/graue Blöcke am Steg oben. Auf dem Host noch nicht nachgestellt (Haus rein/raus,
-   Pausemenü, Portal: sauber). Verdacht: Schatten-Tilemap nach Gebietswechsel 0 ↔ 1
-   (Minish-Wald ↔ Dorf durch Schrumpfen/Wachsen, laut Log mehrfach an derselben Position)
-   wird nicht neu befüllt bzw. enthält Daten des vorherigen Raums. Mike bitten, bei
-   Auftreten sofort „Position merken“ und `dumps/` + Log zu schicken.
+1. **Hyrule-Stadt prüfen:** `hyruleTownTileSetManager.c` tauscht ebenfalls Kachelsätze je
+   Region (Lücke zwischen Regionen nur 128 px) – in der Weitsicht vermutlich derselbe
+   Fehler. Mit synthetischem Spielstand nicht testbar (weißer Bildschirm), braucht Mikes
+   Quick-State. Lösung analog über `PortWsTileSet` (Manager meldet Regionen/Gfx).
 2. **Pausemenü-Status:** halb verdecktes Element (Symbol + Ziffern) unter „SPEICHERN“ unten
    rechts, halb unter der Beschreibungsleiste. Mit Mikes Spielstand auf dem Host nicht sichtbar.
 3. **Vorschlag ohne Antwort:** Schalter „Breitbild“ und „Weitsicht“ zu einer Auswahl

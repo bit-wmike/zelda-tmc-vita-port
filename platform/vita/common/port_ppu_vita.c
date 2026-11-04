@@ -18,6 +18,7 @@
 #include "tmc_platform.h"
 #include "top_view_3ds.h"
 #include "tmc_diag.h"
+#include "port_ws_tileset.h"
 
 #include "virtuappu.h"
 #include "cpu/mode1.h"
@@ -173,6 +174,8 @@ void Port_PPU_PresentFrame(void) {
                                  gScreen.bg3.control == 0x1e05;
     virtuappu_mode1_bg3_hdma_native_bounds =
         port_hdma_dest_overlaps(gIoMem + MODE1_IO_BG3HOFS, gIoMem + MODE1_IO_BG3VOFS + 2) != 0;
+    /* Minish village: tile-set images for cells of the set VRAM lacks. */
+    Port_WsTileSet_PrepareRender();
 #ifndef __vita__
     if (getenv("TMC_MSGBAND_LOG") && virtuappu_mode1_ws_msg_shift != 0 && (sFrameCount % 10) == 0) {
         char line[200];

@@ -40,6 +40,9 @@
 #include "port_widescreen.h"
 #include "port_widescreen_banner_state.h"
 #include "port_horizontal_minish_path.h"
+#ifdef TMC_VITA
+#include "port_ws_tileset.h"
+#endif
 
 #include <string.h>
 
@@ -1869,6 +1872,10 @@ static void Port_WidescreenShadow_Populate(int bg_index, u16* mapSpecial, u16* s
     if (room_tiles_h > kMapRows)
         room_tiles_h = kMapRows;
     const int scrolling = Port_WidescreenScrollActive();
+#ifdef TMC_VITA
+    /* Tile-set context per cell (Minish village, port_ws_tileset.h). */
+    u8* const tileSetCtx = Port_WsTileSet_BeginShadow(scrolling);
+#endif
     for (int sr = 0; sr < MODE1_WS_SHADOW_ROWS; sr++) {
         int shadow_row = sr;
         s32 world_row = 2 * (ydiff >> 4) - 1 + sr;
@@ -1884,6 +1891,11 @@ static void Port_WidescreenShadow_Populate(int bg_index, u16* mapSpecial, u16* s
             world_row = ((ydiff + shake_y) >> 3) + sr;
         }
         u16* row_dst = shadow + (size_t)shadow_row * (size_t)shadow_cols;
+#ifdef TMC_VITA
+        u8* const ctx_dst = tileSetCtx != NULL ? tileSetCtx + (size_t)shadow_row * (size_t)shadow_cols : NULL;
+        if (ctx_dst != NULL)
+            memset(ctx_dst, 0, (size_t)shadow_cols);
+#endif
         if (!scrolling && (world_row < 0 || world_row >= room_tiles_h)) {
             for (int C = 0; C < shadow_cols; C++)
                 row_dst[C] = 0;
@@ -1896,8 +1908,15 @@ static void Port_WidescreenShadow_Populate(int bg_index, u16* mapSpecial, u16* s
                                          ? mapSpecial[world_row * kMapStride + world_col]
                                          : (u16)0);
             row_dst[C] = entry;
+#ifdef TMC_VITA
+            if (ctx_dst != NULL && entry != 0)
+                ctx_dst[C] = Port_WsTileSet_Ctx(world_col, world_row);
+#endif
         }
     }
+#ifdef TMC_VITA
+    Port_WsTileSet_EndShadow(bg_index, tileSetCtx);
+#endif
     virtuappu_mode1_ws_shadow_cols[bg_index] = (uint8_t)shadow_cols;
     virtuappu_mode1_ws_shadow_stride[bg_index] = (uint8_t)shadow_cols;
     virtuappu_mode1_ws_shadow[bg_index] = shadow;
@@ -2020,6 +2039,9 @@ void Port_Widescreen_UpdateShadows(void) {
         virtuappu_mode1_ws_shadow_cols[i] = MODE1_WS_SHADOW_WIDE_COLS;
         virtuappu_mode1_ws_shadow_stride[i] = MODE1_WS_SHADOW_WIDE_COLS;
     }
+#ifdef TMC_VITA
+    Port_WsTileSet_BeginFrame();
+#endif
     virtuappu_mode1_ws_hud_right_anchor = 0;
     virtuappu_mode1_ws_msg_shift = 0;
     virtuappu_mode1_ws_msg_vshift = 0;

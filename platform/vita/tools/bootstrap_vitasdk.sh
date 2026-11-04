@@ -37,7 +37,9 @@ git -C vita-toolchain submodule update --init --depth 1
 [ -d binutils-with-gold-2.46 ] || { tar xf binutils_2.46.orig.tar.xz
   for p in buildscripts/patches/binutils/*.patch; do patch -d binutils-with-gold-2.46 -p1 -s < "$p"; done
   cp buildscripts/config.guess buildscripts/config.sub binutils-with-gold-2.46/; }
-[ -f libelf_0.8.13.orig.tar.gz ] || curl -sSfO http://deb.debian.org/debian/pool/main/libe/libelf/libelf_0.8.13.orig.tar.gz
+# libelf: the copy vitasdk/buildscripts pins (deb.debian.org is not reachable everywhere)
+[ -f libelf-0.8.13.tar.gz ] || curl -sSfLO https://github.com/vitasdk/artifacts/releases/download/libelf-0.8.13/libelf-0.8.13.tar.gz
+echo "591a9b4ec81c1f2042a97aa60564e0cb79d041c52faa7416acb38bc95bd2c76d  libelf-0.8.13.tar.gz" | sha256sum -c -
 
 # 1. binutils
 mkdir -p build-binutils && (cd build-binutils &&
@@ -47,7 +49,7 @@ mkdir -p build-binutils && (cd build-binutils &&
   make -j$JOBS INFO_DEPS= DVIS= pdfs= htmls= && make install INFO_DEPS= DVIS= pdfs= htmls=)
 
 # 2. libelf 0.8.13 + vita-toolchain host tools
-[ -d libelf-0.8.13.orig ] || { tar xf libelf_0.8.13.orig.tar.gz
+[ -d libelf-0.8.13.orig ] || { tar xf libelf-0.8.13.tar.gz && mv libelf-0.8.13 libelf-0.8.13.orig
   patch -d libelf-0.8.13.orig -p1 -s < buildscripts/patches/libelf-configure-in.patch; }
 (cd libelf-0.8.13.orig && autoreconf -i . >/dev/null 2>&1 && cp ../buildscripts/config.guess ../buildscripts/config.sub . &&
   CFLAGS="-O2 -fPIC" ./configure --prefix=$SRC/deps --disable-shared --disable-nls && make -j$JOBS && make install)
