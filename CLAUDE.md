@@ -74,7 +74,10 @@ der Boot-Warp passiert erst danach.
 
 Wichtige Schalter (Umgebungsvariablen):
 - `TMC_DUMP=500,600` Einzelbilder (PPM, Frame-Größe = gerendertes Bild, z. B. 400×240/266×160)
-- `TMC_BOOT=area,room,x,y` (hex) direkt ins Spiel; `TMC_WARP_AT="frame:area,room,x,y"`
+- `TMC_BOOT=area,room,x,y[,layer]` (hex, Layer Standard 1) direkt ins Spiel;
+  `TMC_BOOT_STORY=0/1/2` (Standard 1: Prolog-Flags gesetzt, Link steuerbar; 2: zusätzlich
+  Erd-Element/`LV1_CLEAR`, nötig für Hyrule-Stadt `2,0,…`); `TMC_PLAYER_LOG=n` alle n Frames
+  Position/Aktion/Steuerung. Steuerung greift erst nach dem Gebietsnamen-Banner (~Frame 485). `TMC_WARP_AT="frame:area,room,x,y"`
   zweiter Warp (z. B. nach Quick-Load)
 - `TMC_QSAVE_AT` / `TMC_QLOAD_AT=frame` (lädt den neuesten State aus `dumps/` im Arbeitsordner)
 - `TMC_VIEW_LOG=1` pro Frame Bildgröße, KeepZoom, Substate, UI-State, Scroll, Kamera
@@ -141,16 +144,15 @@ Prüfregeln vor jeder Version:
   Zelle→Gruppe: Region-Rechteck, sonst die Gruppe, die der GBA für 240×160-Ansichten mit
   dieser Zelle lädt (`BuildCellGroups`). Ohne Kontexte bitgleich (Regression + Fuzzer).
   Host-Repro: `TMC_BOOT=1,0,158,78` bzw. `1,0,270,1d0`, `1,0,1f0,a0` (vorher Müll/Balken).
-  Bootstrap lädt libelf jetzt aus vitasdk/artifacts (deb.debian.org ist in Claude-Cloud
-  gesperrt). Hinweis: Nach `TMC_BOOT` reagiert Link nicht auf Skript-Tasten (synthetischer
-  Spielstand) – für Lauftests Mikes Quick-State nehmen.
+  Hyrule-Stadt (3 Slots à 8 KiB, Orakel-Haus) läuft über dasselbe Modul, auf dem Host geprüft
+  (`TMC_BOOT_STORY=2 TMC_BOOT=2,0,1f8,380` / `c0,240`, Lauf über die Regionsgrenze).
+  Menü „Ansicht: GBA / Breitbild / Weitsicht“, frische Installation = Weitsicht.
+  Bootstrap lädt libelf aus vitasdk/artifacts (deb.debian.org ist in Claude-Cloud gesperrt).
+  Cloud-Hinweis: `g++-arm-linux-gnueabihf` deinstalliert `gcc-multilib`; dann
+  `ln -s x86_64-linux-gnu/asm /usr/include/asm` für den Host-Build.
 
 ## Offene Punkte (nächste Schritte)
-1. **Hyrule-Stadt prüfen:** `hyruleTownTileSetManager.c` tauscht ebenfalls Kachelsätze je
-   Region (Lücke zwischen Regionen nur 128 px) – in der Weitsicht vermutlich derselbe
-   Fehler. Mit synthetischem Spielstand nicht testbar (weißer Bildschirm), braucht Mikes
-   Quick-State. Code ist schon angebunden (`HyruleTownTileSetManager_ReportWideView`,
-   3 Slots, Orakel-Haus-Sonderfall), aber noch nicht im Bild geprüft.
+1. ~~Hyrule-Stadt~~ erledigt in 0.1.10 (auf der Vita noch von Mike zu bestätigen).
 2. **Pausemenü-Status:** halb verdecktes Element (Symbol + Ziffern) unter „SPEICHERN“ unten
    rechts, halb unter der Beschreibungsleiste. Mit Mikes Spielstand auf dem Host nicht sichtbar.
 3. ~~Ansicht-Auswahl~~ erledigt in 0.1.10: Menü „Ansicht: GBA / Breitbild / Weitsicht“

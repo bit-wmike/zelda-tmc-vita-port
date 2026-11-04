@@ -1,7 +1,8 @@
 /*
- * Host-only test hook: TMC_BOOT="area,room,x,y" skips title/file select by
- * creating a synthetic save slot and warping there (same technique as the
- * port's repro harnesses). TMC_CHEAT_ALL=1 also grants all items.
+ * Host-only test hook: TMC_BOOT="area,room,x,y[,layer]" (hex, layer default 1)
+ * skips title/file select by creating a synthetic save slot and warping there
+ * (same technique as the port's repro harnesses). TMC_CHEAT_ALL=1 also grants
+ * all items. TMC_BOOT_STORY=0/1/2 picks the story state (default 1, see below).
  */
 #include "main.h"
 #include "save.h"
@@ -9,6 +10,9 @@
 #include "room.h"
 #include "area.h"
 #include "player.h"
+#include "common.h"
+#include "flags.h"
+#include "item_ids.h"
 #include "port_debug_actions.h"
 #include "port_runtime_config.h"
 
@@ -24,7 +28,7 @@ unsigned gHostForcedKeys;
 
 void TmcPlatform_FrameHook(void) {
     static int active = -1, booted, warped, cheated;
-    static unsigned a, r, x, y;
+    static unsigned a, r, x, y, l = 1;
     ++sFrame;
     gHostForcedKeys = 0;
     {
@@ -46,7 +50,7 @@ void TmcPlatform_FrameHook(void) {
     }
     if (active < 0) {
         const char* e = getenv("TMC_BOOT");
-        active = e && sscanf(e, "%x,%x,%x,%x", &a, &r, &x, &y) == 4;
+        active = e && sscanf(e, "%x,%x,%x,%x,%x", &a, &r, &x, &y, &l) >= 4;
     }
     if (getenv("TMC_TEXT_DUMP") && sFrame == 120) {
         /* TMC_TEXT_DUMP=bank: print every message of that text bank for all
@@ -126,6 +130,18 @@ void TmcPlatform_FrameHook(void) {
                     (a2 >> 10) & 3, a2 >> 12);
         }
     }
+    if (getenv("TMC_PLAYER_LOG") && gMain.task == TASK_GAME) {
+        /* TMC_PLAYER_LOG=<n>: every n frames Link's room-relative position,
+         * action, control mode (0 = enabled, 3 = disabled), layer, held keys. */
+        unsigned n = (unsigned)atoi(getenv("TMC_PLAYER_LOG"));
+        if (n == 0 || sFrame % n == 0)
+            fprintf(stderr, "[player] f=%u area=%x room=%x pos=%d,%d action=%d ctl=%d layer=%d keys=%x progress=%u\n",
+                    sFrame, gRoomControls.area, gRoomControls.room,
+                    gPlayerEntity.base.x.HALF.HI - gRoomControls.origin_x,
+                    gPlayerEntity.base.y.HALF.HI - gRoomControls.origin_y, gPlayerEntity.base.action,
+                    gPlayerState.controlMode, gPlayerEntity.base.collisionLayer, gInput.heldKeys,
+                    gSave.global_progress);
+    }
     if (!active) {
         if (getenv("TMC_LANG_EARLY") && sFrame == 60) {
             gSaveHeader->language = (u8)atoi(getenv("TMC_LANG_EARLY"));
@@ -144,19 +160,60 @@ void TmcPlatform_FrameHook(void) {
         sv->saved_status.room_next = (u8)r;
         sv->saved_status.start_pos_x = (s16)x;
         sv->saved_status.start_pos_y = (s16)y;
+        /* ResetSaveFile leaves layer 0, which the room load turns into the
+         * top layer (2): on ground-level maps Link then collides on all
+         * sides and sub_08008AC6 respawns him every step (no movement).
+         * A real new game uses layer 1 (FinalizeSave). */
+        sv->saved_status.layer = (u8)l;
         gFileSelectState.saveStatus[0] = 1;
         if (getenv("TMC_LANG")) gSaveHeader->language = (u8)atoi(getenv("TMC_LANG"));
         SetActiveSave(0);
+        {
+            /* TMC_BOOT_STORY (default 1; 0 = untouched fresh save).
+             * 1: a fresh save is in the prologue. Zelda's escort
+             * script freezes Link in the fields (ScriptCommand_SetPlayerIdle ->
+             * CONTROL_DISABLED). Set met Zelda / met Ezlo / departed
+             * (TABIDACHI). ZELDA_CHASE stays clear: it spawns Zelda as a
+             * follower in every room.
+             * TMC_BOOT_STORY=2: additionally Deepwood cleared (LV1_CLEAR,
+             * global_progress 2). Needed for Hyrule Town: at progress 1
+             * sub_unk3_HyruleTown_0 swaps in the festival town (area 0x15)
+             * with a white fade. */
+            const char* st = getenv("TMC_BOOT_STORY");
+            int stage = st ? atoi(st) : 1;
+            if (stage >= 1) {
+                SetGlobalFlag(START);
+                SetGlobalFlag(EZERO_1ST);
+                SetGlobalFlag(TABIDACHI);
+            }
+            if (stage >= 2) {
+                /* ResetTmpFlags clears LV1_CLEAR on every room change unless
+                 * the Earth Element is in the inventory. */
+                SetInventoryValue(ITEM_EARTH_ELEMENT, 1);
+                SetGlobalFlag(LV1_CLEAR);
+                gSave.global_progress = 2;
+            }
+            if (stage > 0)
+                fprintf(stderr, "[boot] story stage %d (progress %u)\n", stage, gSave.global_progress);
+        }
         SetTask(TASK_GAME);
         booted = 1;
         fprintf(stderr, "[boot] frame %u -> TASK_GAME\n", sFrame);
     }
     if (booted && !warped && gMain.task == TASK_GAME && sFrame % 20 == 0) {
+        static int tries;
         if ((unsigned)gRoomControls.area == a && (unsigned)gRoomControls.room == r) {
             warped = 1;
             fprintf(stderr, "[boot] frame %u in area %x room %x\n", sFrame, a, r);
+        } else if (++tries > 3) {
+            /* The room redirected us (e.g. Hyrule Town -> festival town at
+             * story progress 1). Re-warping every 20 frames would loop
+             * forever through white fades, so accept where we are. */
+            warped = 1;
+            fprintf(stderr, "[boot] frame %u: target %x/%x redirected to %x/%x (story state? try TMC_BOOT_STORY=2)\n",
+                    sFrame, a, r, gRoomControls.area, gRoomControls.room);
         } else {
-            Port_DebugAction_Warp((unsigned char)a, (unsigned char)r, (unsigned short)x, (unsigned short)y, 0);
+            Port_DebugAction_Warp((unsigned char)a, (unsigned char)r, (unsigned short)x, (unsigned short)y, (unsigned char)l);
         }
     }
     if (getenv("TMC_OVERLAY_DUMP") && sFrame == (unsigned)atoi(getenv("TMC_OVERLAY_DUMP"))) {
