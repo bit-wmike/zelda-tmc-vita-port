@@ -1,4 +1,5 @@
 #include "port_second_screen_theme.h"
+#include "port_second_screen_memo.h"
 
 #include "port_rom.h"
 #include "region.h"
@@ -197,6 +198,9 @@ static const u8 kQuestObjGfxGroups[] = { 91u, 86u, 23u, 16u };
 #define MENU_BUTTON_CORNER 2 /* the plate's rounded rim is 2 px a side */
 
 static int sBuilt = 0;
+/* Bumped whenever the decoded art changes, so pixel-memo keys that name the
+ * art only by pointer (or not at all) can never outlive it. */
+static uint32_t sThemeGen = 0;
 
 /* All cached element pixels live in one arena so failure cleanup is just
  * "leave the slot NULL" — no per-element allocation bookkeeping. Sized
@@ -1313,6 +1317,7 @@ static void BuildAll(const uint16_t* hudPal, u32 hudColors) {
     DeriveColors();
     BuildMenuTheme();
     BuildMenuButton();
+    ++sThemeGen;
 }
 
 int Port_SecondScreenTheme_Ready(void) {
@@ -1553,8 +1558,50 @@ int Port_SecondScreenTheme_BackdropIsDark(void) {
     return (299u * r + 587u * g + 114u * b) / 1000u < 128u;
 }
 
+static void DrawBackdropDirect(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride, int32_t x0,
+                               int32_t y0, int32_t x1, int32_t y1, int32_t scale);
+
 void Port_SecondScreenTheme_DrawBackdrop(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride,
                                          int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t scale) {
+    /* The doodle lattice costs ~8 instructions a pixel and comes out the same
+     * every paint, so keep the finished rect. Every pixel of the clipped rect
+     * is written (fill first), so a captured copy is exact; the flat styles are
+     * a plain fill and stay direct. The key is everything the lattice reads. */
+    if (scale < 1) {
+        scale = 1;
+    }
+    if ((sBackdropStyle == SS_BACKDROP_PARCHMENT || sBackdropStyle == SS_BACKDROP_DIM) && sMenuOk &&
+        sDoodleOk) {
+        const int32_t cx0 = x0 < 0 ? 0 : x0, cy0 = y0 < 0 ? 0 : y0;
+        const int32_t cx1 = x1 > bufW ? bufW : x1, cy1 = y1 > bufH ? bufH : y1;
+        SsMemoKey k;
+        if (cx0 >= cx1 || cy0 >= cy1) {
+            return; /* nothing visible; the direct path would draw nothing either */
+        }
+        SsMemoKey_Init(&k, SS_MEMO_KIND_BACKDROP);
+        SsMemoKey_U32(&k, sThemeGen);
+        SsMemoKey_I32(&k, sBackdropStyle);
+        SsMemoKey_U32(&k, Port_SecondScreenTheme_BackdropColor());
+        SsMemoKey_U32(&k, sColors[SSC_MENU_INK]);
+        SsMemoKey_I32(&k, x0);
+        SsMemoKey_I32(&k, y0);
+        SsMemoKey_I32(&k, x1);
+        SsMemoKey_I32(&k, y1);
+        SsMemoKey_I32(&k, bufW);
+        SsMemoKey_I32(&k, bufH);
+        SsMemoKey_I32(&k, scale);
+        if (Port_SecondScreenMemo_Restore(&k, pixels, stride)) {
+            return;
+        }
+        DrawBackdropDirect(pixels, bufW, bufH, stride, x0, y0, x1, y1, scale);
+        Port_SecondScreenMemo_Capture(&k, pixels, stride, cx0, cy0, cx1, cy1);
+        return;
+    }
+    DrawBackdropDirect(pixels, bufW, bufH, stride, x0, y0, x1, y1, scale);
+}
+
+static void DrawBackdropDirect(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride, int32_t x0,
+                               int32_t y0, int32_t x1, int32_t y1, int32_t scale) {
     if (scale < 1) {
         scale = 1;
     }
@@ -1671,12 +1718,60 @@ static int32_t SliceMap(int32_t d, int32_t dstLen, int32_t srcLen, int32_t corne
     return corner + (sd - c) % tspan;
 }
 
+static void DrawSlicedDirect(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride, int32_t x,
+                             int32_t y, int32_t w, int32_t h, int32_t scale, const uint32_t* srcImg,
+                             int32_t srcStride, int32_t sx0, int32_t sy0, int32_t sx1, int32_t sy1, int32_t cw,
+                             int32_t ch, int32_t snap);
+
 /* Shared sliced blit off one of the composed menu sources. Transparent
- * source pixels are skipped (the slab's rounded outline corners). */
+ * source pixels are skipped (the slab's rounded outline corners).
+ *
+ * The result only depends on (w, h, scale) and the source, never on (x, y):
+ * the mapping runs on dx/dy and the surface clip only drops pixels. Every
+ * write is a non-zero source pixel. So the finished slab is kept as a memo
+ * sprite — a full-panel slab is ~20M instructions to slice and a few
+ * hundred thousand to copy back. */
 static void DrawSliced(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride, int32_t x, int32_t y,
                        int32_t w, int32_t h, int32_t scale, const uint32_t* srcImg, int32_t srcStride,
                        int32_t sx0, int32_t sy0, int32_t sx1, int32_t sy1, int32_t cw, int32_t ch,
                        int32_t snap) {
+    SsMemoKey k;
+    const SsMemoEntry* e;
+    uint32_t* buf;
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    SsMemoKey_Init(&k, SS_MEMO_KIND_SLICED);
+    SsMemoKey_U32(&k, sThemeGen);
+    SsMemoKey_Ptr(&k, srcImg);
+    SsMemoKey_I32(&k, srcStride);
+    SsMemoKey_I32(&k, w);
+    SsMemoKey_I32(&k, h);
+    SsMemoKey_I32(&k, scale);
+    SsMemoKey_I32(&k, sx0);
+    SsMemoKey_I32(&k, sy0);
+    SsMemoKey_I32(&k, sx1);
+    SsMemoKey_I32(&k, sy1);
+    SsMemoKey_I32(&k, cw);
+    SsMemoKey_I32(&k, ch);
+    SsMemoKey_I32(&k, snap);
+    e = Port_SecondScreenMemo_FindSprite(&k);
+    if (e == NULL && (buf = Port_SecondScreenMemo_BeginSprite(&k, w, h, 0, 0)) != NULL) {
+        DrawSlicedDirect(buf, w, h, w, 0, 0, w, h, scale, srcImg, srcStride, sx0, sy0, sx1, sy1, cw, ch, snap);
+        e = Port_SecondScreenMemo_EndSprite();
+    }
+    if (e != NULL) {
+        Port_SecondScreenMemo_BlitSprite(e, pixels, bufW, bufH, stride, x, y);
+        return;
+    }
+    DrawSlicedDirect(pixels, bufW, bufH, stride, x, y, w, h, scale, srcImg, srcStride, sx0, sy0, sx1, sy1, cw,
+                     ch, snap);
+}
+
+static void DrawSlicedDirect(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride, int32_t x,
+                             int32_t y, int32_t w, int32_t h, int32_t scale, const uint32_t* srcImg,
+                             int32_t srcStride, int32_t sx0, int32_t sy0, int32_t sx1, int32_t sy1, int32_t cw,
+                             int32_t ch, int32_t snap) {
     int32_t dx, dy;
     if (scale < 1) {
         scale = 1;
@@ -2180,9 +2275,69 @@ static void BracketCorner(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t 
     }
 }
 
+static int DrawMenuButtonDirect(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride, int32_t x,
+                                int32_t y, int32_t w, int32_t h, const char* label, int pressed);
+
+/* A button is nine plate patches, its label and (pressed) the brackets:
+ * all of it laid out relative to (x, y), all of it opaque-or-skip writes —
+ * so it is kept as a memo sprite per (size, label, pressed). The sprite is
+ * rendered with a wide margin, since the label and the brackets are only
+ * known to stay NEAR the plate, then cropped to what was drawn. */
 int Port_SecondScreenTheme_DrawMenuButton(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride,
                                           int32_t x, int32_t y, int32_t w, int32_t h, const char* label,
                                           int pressed) {
+    int32_t ps, corner, padX, padY;
+    SsMemoKey k;
+    const SsMemoEntry* e;
+    uint32_t* buf;
+
+    if (!sBuilt || !sBtnOk || pixels == NULL || w <= 0 || h <= 0) {
+        return 0;
+    }
+    /* The direct path's own fit; when it gives up nothing is drawn. */
+    ps = h / sBtnH;
+    if (ps < 1) {
+        ps = 1;
+    }
+    corner = MENU_BUTTON_CORNER;
+    while (corner * 2 * ps > w || corner * 2 * ps > h) {
+        if (ps > 1) {
+            ps--;
+        } else {
+            corner--;
+            if (corner < 1) {
+                return 0;
+            }
+        }
+    }
+    /* Label glyphs (scale ls <= h/13) stay within ~0.08h of the plate
+     * vertically and end at most one outline column (ls px) past their
+     * measured width horizontally; brackets reach their own size. Pad by
+     * comfortably more than either can. */
+    padX = h / 2 + sBtnBracket.w * ps + 16;
+    padY = h / 2 + sBtnBracket.h * ps + 16;
+
+    SsMemoKey_Init(&k, SS_MEMO_KIND_MENU_BUTTON);
+    SsMemoKey_U32(&k, sThemeGen);
+    SsMemoKey_I32(&k, w);
+    SsMemoKey_I32(&k, h);
+    SsMemoKey_I32(&k, pressed ? 1 : 0);
+    SsMemoKey_Str(&k, label);
+    e = Port_SecondScreenMemo_FindSprite(&k);
+    if (e == NULL &&
+        (buf = Port_SecondScreenMemo_BeginSprite(&k, w + 2 * padX, h + 2 * padY, padX, padY)) != NULL) {
+        DrawMenuButtonDirect(buf, w + 2 * padX, h + 2 * padY, w + 2 * padX, padX, padY, w, h, label, pressed);
+        e = Port_SecondScreenMemo_EndSprite();
+    }
+    if (e != NULL) {
+        Port_SecondScreenMemo_BlitSprite(e, pixels, bufW, bufH, stride, x, y);
+        return 1;
+    }
+    return DrawMenuButtonDirect(pixels, bufW, bufH, stride, x, y, w, h, label, pressed);
+}
+
+static int DrawMenuButtonDirect(uint32_t* pixels, int32_t bufW, int32_t bufH, int32_t stride, int32_t x,
+                                int32_t y, int32_t w, int32_t h, const char* label, int pressed) {
     int32_t ps, corner, cleanCol = sBtnCleanCol, cleanRow = sBtnCleanRow;
     int32_t ls, textW = 0, tx, ty;
 

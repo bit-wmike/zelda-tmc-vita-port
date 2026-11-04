@@ -528,6 +528,45 @@ int Port_SecondScreenDungeonMap_Draw(uint32_t* pixels, int32_t bufW, int32_t buf
     ox = dstX + (dstW - outW) / 2;
     oy = dstY + (dstH - outH) / 2;
 
+    /* The source column depends on dx alone: work it out once per column, not
+     * once per pixel (a 64-bit software division each on 32-bit ARM). Same
+     * expression, same values; wider-than-table outputs keep the inline form. */
+    {
+        static int32_t sSrcX[1024];
+        const int useLut = outW <= (int32_t)(sizeof(sSrcX) / sizeof(sSrcX[0]));
+        if (useLut) {
+            for (dx = 0; dx < outW; dx++) {
+                sSrcX[dx] = bx0 + (int32_t)((int64_t)dx * bw / outW) + CANVAS_MARGIN;
+            }
+        }
+        for (dy = 0; dy < outH && useLut; dy++) {
+            int32_t destY = oy + dy;
+            int32_t srcY = by0 + (int32_t)((int64_t)dy * bh / outH) + CANVAS_MARGIN;
+            uint32_t* row;
+            const uint32_t* srcRow;
+            if (destY < 0 || destY >= bufH || srcY < 0 || srcY >= CANVAS_W) {
+                continue;
+            }
+            row = pixels + (size_t)destY * (size_t)stride;
+            srcRow = sCanvas + (size_t)srcY * CANVAS_W;
+            for (dx = 0; dx < outW; dx++) {
+                int32_t destX = ox + dx;
+                int32_t srcX = sSrcX[dx];
+                uint32_t c;
+                if (destX < 0 || destX >= bufW || srcX < 0 || srcX >= CANVAS_W) {
+                    continue;
+                }
+                c = srcRow[srcX];
+                if (c != 0) {
+                    row[destX] = c;
+                }
+            }
+        }
+        if (useLut) {
+            return 1;
+        }
+    }
+
     for (dy = 0; dy < outH; dy++) {
         int32_t destY = oy + dy;
         int32_t srcY = by0 + (int32_t)((int64_t)dy * bh / outH) + CANVAS_MARGIN;

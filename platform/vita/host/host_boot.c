@@ -255,6 +255,7 @@ void TmcPlatform_FrameHook(void) {
         if (getenv("TMC_OVERLAY_SEQ")) {
             extern void Port_SecondScreen_OnTap(int x, int y, int longPress);
             extern void TmcVitaUi_TestOverlayDrag(int dx, int dy);
+            extern void Port_SecondScreen_MapZoom(int dir);
             char seq[512];
             snprintf(seq, sizeof(seq), "%s", getenv("TMC_OVERLAY_SEQ"));
             int step = 0;
@@ -263,6 +264,7 @@ void TmcPlatform_FrameHook(void) {
                 int a = 0, b = 0;
                 if (tok[0] == 't' && sscanf(tok + 2, "%d,%d", &a, &b) == 2) Port_SecondScreen_OnTap(a, b, 0);
                 else if (tok[0] == 'd' && sscanf(tok + 2, "%d,%d", &a, &b) == 2) TmcVitaUi_TestOverlayDrag(a, b);
+                else if (tok[0] == 'z' && sscanf(tok + 2, "%d", &a) == 1) Port_SecondScreen_MapZoom(a); /* L/R */
                 int frames = (tok[0] == 'p' && sscanf(tok + 2, "%d", &a) == 1) ? a : 12;
                 for (int t = 0; t < frames; ++t) Port_SecondScreen_PaintInto(px, W, H, W, &snap, tick++);
                 char name[64];
@@ -272,6 +274,27 @@ void TmcPlatform_FrameHook(void) {
                 for (int i = 0; i < W * H; ++i) { unsigned char c[3] = { px[i] & 255, (px[i] >> 8) & 255, (px[i] >> 16) & 255 }; fwrite(c, 1, 3, g); }
                 fclose(g);
             }
+        }
+    }
+    /* TMC_OVERLAY_EVERY=n: after TMC_OVERLAY_DUMP, repaint the overlay every n
+     * frames (3 paints, like the dump) and write overlay_f<frame>.ppm, so the
+     * overlay can be checked against a changing game state. */
+    if (getenv("TMC_OVERLAY_DUMP") && getenv("TMC_OVERLAY_EVERY")) {
+        unsigned first = (unsigned)atoi(getenv("TMC_OVERLAY_DUMP"));
+        unsigned every = (unsigned)atoi(getenv("TMC_OVERLAY_EVERY"));
+        if (every > 0 && sFrame > first && (sFrame - first) % every == 0) {
+            static uint32_t epx[544 * 960];
+            SecondScreenSnapshot snap;
+            Port_SecondScreenState_Read(&snap);
+            int W = getenv("TMC_OVERLAY_W") ? atoi(getenv("TMC_OVERLAY_W")) : 960;
+            int H = getenv("TMC_OVERLAY_H") ? atoi(getenv("TMC_OVERLAY_H")) : 544;
+            for (int t = 0; t < 3; ++t) Port_SecondScreen_PaintInto(epx, W, H, W, &snap, (uint32_t)(sFrame * 4 + t));
+            char name[64];
+            snprintf(name, sizeof(name), "overlay_f%u.ppm", sFrame);
+            FILE* g = fopen(name, "wb");
+            fprintf(g, "P6\n%d %d\n255\n", W, H);
+            for (int i = 0; i < W * H; ++i) { unsigned char c[3] = { epx[i] & 255, (epx[i] >> 8) & 255, (epx[i] >> 16) & 255 }; fwrite(c, 1, 3, g); }
+            fclose(g);
         }
     }
     if (warped && getenv("TMC_GLOBAL_FLAG")) {

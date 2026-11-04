@@ -66,7 +66,8 @@ set(TMC_PORT_SOURCES
     port/port_second_screen_state.c
     port/port_second_screen_render.c port/port_second_screen_worldmap.c
     port/port_second_screen_dungeonmap.c port/port_second_screen_quest.c
-    port/port_second_screen_theme.c port/port_roll_attack_macro.c
+    port/port_second_screen_theme.c port/port_second_screen_memo.c
+    port/port_roll_attack_macro.c
     port/port_filter.c port/port_animation.c port/port_math.c
     port/port_text_render.c port/port_gameplay_stubs.c port/port_m4a_stubs.c
     port/port_room_funcs.c port/port_script_funcs.c port/port_analog_movement.c
@@ -143,6 +144,7 @@ set_source_files_properties(
     "${TMC_ROOT}/port/port_second_screen_dungeonmap.c"
     "${TMC_ROOT}/port/port_second_screen_quest.c"
     "${TMC_ROOT}/port/port_second_screen_theme.c"
+    "${TMC_ROOT}/port/port_second_screen_memo.c"
     "${CMAKE_CURRENT_LIST_DIR}/source/platform_gpu_3ds.c"
     "${CMAKE_CURRENT_LIST_DIR}/source/port_ppu_3ds.c"
     "${CMAKE_CURRENT_LIST_DIR}/source/port_ppu_gpu_3ds_model.c"

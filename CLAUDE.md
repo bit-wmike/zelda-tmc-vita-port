@@ -1,4 +1,4 @@
-# CLAUDE.md – Übergabe für Claude Code (Stand v0.1.10, 04.11.2026)
+# CLAUDE.md – Übergabe für Claude Code (Stand v0.1.11, 04.11.2026)
 
 Diese Datei liest Claude Code beim Start automatisch. Sie fasst alles zusammen, was
 für die Weiterarbeit am **PS-Vita-Port von Zelda: The Minish Cap** nötig ist.
@@ -151,6 +151,12 @@ Prüfregeln vor jeder Version:
   Cloud-Hinweis: `g++-arm-linux-gnueabihf` deinstalliert `gcc-multilib`; dann
   `ln -s x86_64-linux-gnu/asm /usr/include/asm` für den Host-Build.
 
+- 0.1.11: Overlay-Cache (`port/port_second_screen_memo.*`, LRU bis 16 MiB, exakter
+  Schlüssel aus allen Eingaben): Hintergrund, Platten, Knöpfe, Ringe, Detail-/Weltkarte.
+  Malen 14–34 M → 1,4–4,5 M Instr. (x86), 266 Overlay-Dumps byteweise gleich. Noch direkt:
+  `DrawUnrevealedRegions` (3,2 M), Dungeon-Leinwand, alles Animierte. Neue Hooks:
+  `TMC_OVERLAY_SEQ` Schritt `z:±1` (Zoom), `TMC_OVERLAY_EVERY=n`.
+
 ## Offene Punkte (nächste Schritte)
 1. ~~Hyrule-Stadt~~ erledigt in 0.1.10 (auf der Vita noch von Mike zu bestätigen).
 2. **Pausemenü-Status:** halb verdecktes Element (Symbol + Ziffern) unter „SPEICHERN“ unten
@@ -159,8 +165,7 @@ Prüfregeln vor jeder Version:
    (ini-Schlüssel unverändert `widescreen`/`full_view`), frische Installation = Weitsicht.
 4. Kosmetik/Leistung: Iris- und andere GBA-Fenstereffekte erzwingen die normale Ansicht;
    Raum-Scroll-Übergänge zeigen kurz 266×160; generischer Compositor (Affin-BG-Zeilen,
-   z. B. Deepwood 48/20) ist noch der langsame Pfad; Overlay-Hintergrund nicht gecacht
-   (~17 M Instr. pro Malen).
+   z. B. Deepwood 48/20) ist noch der langsame Pfad.
 5. Bekannt, nicht Vita-spezifisch: Teleport-Cheat nach Hyrule-Stadt im Prolog → weißer
    Bildschirm; `ResolveRomPtr … outside ROM` beim Übergang Hyrule-Stadt → Festival (harmlos);
    Räume 67/04 und 8a/02 stürzen nur per Debug-Warp ab.

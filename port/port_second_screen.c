@@ -48,6 +48,7 @@
 #include "port_second_screen.h"
 #include "port_second_screen_camera.h"
 #include "port_second_screen_dungeonmap.h"
+#include "port_second_screen_memo.h"
 #include "port_second_screen_quest.h"
 #include "port_second_screen_render.h"
 #include "port_second_screen_state.h"
@@ -462,6 +463,35 @@ static void FillRing(const SSurf* s, int32_t cx, int32_t cy, int32_t rOut, int32
 
 static void FillCircle(const SSurf* s, int32_t cx, int32_t cy, int32_t r, uint32_t color) {
     FillRing(s, cx, cy, r, 0, color);
+}
+
+/* FillRing kept as a memo sprite: the annulus is a function of (rOut, rIn,
+ * color) around its center, and every write is that one color. For the
+ * rings that look the same paint after paint (not the armed breath, whose
+ * color changes every tick). A zero color would read as "no write". */
+static void FillRingMemo(const SSurf* s, int32_t cx, int32_t cy, int32_t rOut, int32_t rIn, uint32_t color) {
+    SsMemoKey k;
+    const SsMemoEntry* e;
+    uint32_t* buf;
+    if (color == 0 || rOut < 4 || rOut > 1024) {
+        FillRing(s, cx, cy, rOut, rIn, color);
+        return;
+    }
+    SsMemoKey_Init(&k, SS_MEMO_KIND_RING);
+    SsMemoKey_I32(&k, rOut);
+    SsMemoKey_I32(&k, rIn);
+    SsMemoKey_U32(&k, color);
+    e = Port_SecondScreenMemo_FindSprite(&k);
+    if (e == NULL && (buf = Port_SecondScreenMemo_BeginSprite(&k, 2 * rOut + 1, 2 * rOut + 1, rOut, rOut)) != NULL) {
+        const SSurf rs = { buf, 2 * rOut + 1, 2 * rOut + 1, 2 * rOut + 1 };
+        FillRing(&rs, rOut, rOut, rOut, rIn, color);
+        e = Port_SecondScreenMemo_EndSprite();
+    }
+    if (e != NULL) {
+        Port_SecondScreenMemo_BlitSprite(e, s->px, s->w, s->h, s->stride, cx, cy);
+        return;
+    }
+    FillRing(s, cx, cy, rOut, rIn, color);
 }
 
 /* Horizontal inset of a rounded rect's edge at scanline center `yc`. */
@@ -1003,8 +1033,44 @@ static void PaintSchematic(const SSurf* s, const SecondScreenSnapshot* snap, int
 /* Nearest-neighbor blit of the map image under transform (ox, oy, scale),
  * clipped to the given rect; samples only the frame crop of the source.
  * Incremental fixed-step sampling: one float add + cast per pixel. */
+static void BlitMapRegionDirect(const SSurf* s, const uint32_t* img, int32_t imgW, int32_t imgH, float ox,
+                                float oy, float scale, int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1,
+                                int32_t* cover);
+
+/* Memo wrapper: the blit writes exactly a rectangle (sx and sy are monotonic
+ * in x and y, so the in-crop columns and rows are each one run) and nothing
+ * else, and that rectangle is a pure function of the arguments — the map
+ * images are built once and named by pointer. So the covered rect is
+ * captured and copied back while the camera holds still. */
 static void BlitMapRegion(const SSurf* s, const uint32_t* img, int32_t imgW, int32_t imgH, float ox,
                           float oy, float scale, int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1) {
+    SsMemoKey k;
+    int32_t cover[4];
+    SsMemoKey_Init(&k, SS_MEMO_KIND_WORLD_MAP);
+    SsMemoKey_Ptr(&k, img);
+    SsMemoKey_I32(&k, imgW);
+    SsMemoKey_I32(&k, imgH);
+    SsMemoKey_F32(&k, ox);
+    SsMemoKey_F32(&k, oy);
+    SsMemoKey_F32(&k, scale);
+    SsMemoKey_I32(&k, cx0);
+    SsMemoKey_I32(&k, cy0);
+    SsMemoKey_I32(&k, cx1);
+    SsMemoKey_I32(&k, cy1);
+    SsMemoKey_I32(&k, s->w);
+    SsMemoKey_I32(&k, s->h);
+    if (Port_SecondScreenMemo_Restore(&k, s->px, s->stride)) {
+        return;
+    }
+    BlitMapRegionDirect(s, img, imgW, imgH, ox, oy, scale, cx0, cy0, cx1, cy1, cover);
+    Port_SecondScreenMemo_Capture(&k, s->px, s->stride, cover[0], cover[1], cover[2], cover[3]);
+}
+
+static void BlitMapRegionDirect(const SSurf* s, const uint32_t* img, int32_t imgW, int32_t imgH, float ox,
+                                float oy, float scale, int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1,
+                                int32_t* cover) {
+    /* cover: [x0, y0, x1, y1) of what was written; empty unless set below. */
+    cover[0] = cover[1] = cover[2] = cover[3] = 0;
     int32_t sxMin = WMAP_CROP_X0, syMin = WMAP_CROP_Y0;
     int32_t sxMax = imgW < WMAP_CROP_X1 ? imgW : WMAP_CROP_X1;
     int32_t syMax = imgH < WMAP_CROP_Y1 ? imgH : WMAP_CROP_Y1;
@@ -1045,9 +1111,38 @@ static void BlitMapRegion(const SSurf* s, const uint32_t* img, int32_t imgW, int
     const int64_t invFx = fixedOk ? (int64_t)((double)inv * 4294967296.0) : 0;
     const int64_t sxStartFx = fixedOk ? (int64_t)((double)sxfStart * 4294967296.0) : 0;
 
+    /* Which columns get written, by the very arithmetic of the loops below
+     * (the same for every row). Expected to be one run; if it ever were not,
+     * the cover stays empty and the memo just doesn't cache. */
+    int32_t colA = -1, colB = -1, colN = 0, rowA = -1, rowB = -1, rowN = 0;
+    if (fixedOk) {
+        int64_t sxFx = sxStartFx;
+        for (int32_t x = cx0; x < cx1; x++, sxFx += invFx) {
+            const int32_t sx = (int32_t)(sxFx >> 32);
+            if (sx >= sxMin && sx < sxMax) {
+                if (colA < 0) colA = x;
+                colB = x + 1;
+                colN++;
+            }
+        }
+    } else {
+        float sxf = sxfStart;
+        for (int32_t x = cx0; x < cx1; x++, sxf += inv) {
+            int32_t sx = (int32_t)sxf;
+            if (sx >= sxMin && sx < sxMax) {
+                if (colA < 0) colA = x;
+                colB = x + 1;
+                colN++;
+            }
+        }
+    }
+
     for (int32_t y = cy0; y < cy1; y++) {
         int32_t sy = (int32_t)((y - oy) * inv);
         if (sy < syMin || sy >= syMax) continue;
+        if (rowA < 0) rowA = y;
+        rowB = y + 1;
+        rowN++;
         const uint32_t* srow = img + (size_t)sy * (size_t)imgW;
         uint32_t* drow = s->px + (size_t)y * (size_t)s->stride;
         if (fixedOk) {
@@ -1067,6 +1162,12 @@ static void BlitMapRegion(const SSurf* s, const uint32_t* img, int32_t imgW, int
                 }
             }
         }
+    }
+    if (colN > 0 && colN == colB - colA && rowN > 0 && rowN == rowB - rowA) {
+        cover[0] = colA;
+        cover[1] = rowA;
+        cover[2] = colB;
+        cover[3] = rowB;
     }
 }
 
@@ -1183,10 +1284,34 @@ static int PaintDetailMap(const SSurf* s, const SecondScreenSnapshot* snap, Targ
     const float midX = (rx0 + rx1) / 2.0f, midY = (ry0 + ry1) / 2.0f;
     int32_t colMap[1024];
     if (x1 - x0 > 1024) return 0;
-    for (int32_t x = x0; x < x1; x++) {
+    /* The map rect is a pure function of the view (center, scale, rect), the
+     * stitched image (built once, named by pointer) and which regions are
+     * uncovered — and every pixel of it is written below. While none of that
+     * moves (the overlay freezes the game) the finished rect is copied back
+     * instead of resampled: ~9M instructions a paint on the Vita panel. */
+    SsMemoKey mapKey;
+    SsMemoKey_Init(&mapKey, SS_MEMO_KIND_DETAIL_MAP);
+    SsMemoKey_Ptr(&mapKey, img);
+    SsMemoKey_Ptr(&mapKey, regionOf);
+    SsMemoKey_I32(&mapKey, W);
+    SsMemoKey_I32(&mapKey, H);
+    SsMemoKey_U32(&mapKey, revealed);
+    SsMemoKey_U32(&mapKey, outside);
+    SsMemoKey_U32(&mapKey, covered);
+    SsMemoKey_I32(&mapKey, x0);
+    SsMemoKey_I32(&mapKey, y0);
+    SsMemoKey_I32(&mapKey, x1);
+    SsMemoKey_I32(&mapKey, y1);
+    SsMemoKey_F32(&mapKey, cx);
+    SsMemoKey_F32(&mapKey, cy);
+    SsMemoKey_F32(&mapKey, scale);
+    SsMemoKey_F32(&mapKey, midX);
+    SsMemoKey_F32(&mapKey, midY);
+    const int mapRestored = x0 < x1 && y0 < y1 && Port_SecondScreenMemo_Restore(&mapKey, s->px, s->stride);
+    for (int32_t x = x0; x < x1 && !mapRestored; x++) {
         colMap[x - x0] = (int32_t)floorf(cx + ((float)x + 0.5f - midX) / scale);
     }
-    for (int32_t y = y0; y < y1; y++) {
+    for (int32_t y = y0; y < y1 && !mapRestored; y++) {
         uint32_t* row = s->px + (size_t)y * (size_t)s->stride;
         const int32_t my = (int32_t)floorf(cy + ((float)y + 0.5f - midY) / scale);
         if (my < 0 || my >= H) {
@@ -1205,6 +1330,9 @@ static int PaintDetailMap(const SSurf* s, const SecondScreenSnapshot* snap, Targ
             }
             row[x] = c;
         }
+    }
+    if (!mapRestored) {
+        Port_SecondScreenMemo_Capture(&mapKey, s->px, s->stride, x0, y0, x1, y1);
     }
 
     /* Markers of every uncovered region (map hints, kinstone fusions). */
@@ -2644,8 +2772,7 @@ static void DrawItemRing(const SSurf* s, const SecondScreenSnapshot* snap, Targe
                  MixColor(Port_SecondScreenTheme_BackdropColor(), gold, (uint32_t)(60 + 150 * pt)));
     }
 
-    FillCircle(s, (int32_t)cx, (int32_t)cy, (int32_t)r,
-               Port_SecondScreenTheme_Color(SSC_MENU_STONE_DARK));
+    FillRingMemo(s, (int32_t)cx, (int32_t)cy, (int32_t)r, 0, Port_SecondScreenTheme_Color(SSC_MENU_STONE_DARK));
 
     /* Icon first, rings after, and sized to fit INSIDE the gold band: the
      * item art is a 16x16 square, so what has to clear the band is its
@@ -2671,9 +2798,9 @@ static void DrawItemRing(const SSurf* s, const SecondScreenSnapshot* snap, Targe
                                              (int32_t)(cy - 8 * iconScale), iconScale, itemId);
     }
 
-    FillRing(s, (int32_t)cx, (int32_t)cy, (int32_t)r, (int32_t)(r - 1.5f * u), ink);
-    FillRing(s, (int32_t)cx, (int32_t)cy, (int32_t)(r - 3 * u), (int32_t)(r - 4.5f * u), goldDim);
-    FillRing(s, (int32_t)cx, (int32_t)cy, (int32_t)(r - 4.5f * u), (int32_t)(r - 6 * u), gold);
+    FillRingMemo(s, (int32_t)cx, (int32_t)cy, (int32_t)r, (int32_t)(r - 1.5f * u), ink);
+    FillRingMemo(s, (int32_t)cx, (int32_t)cy, (int32_t)(r - 3 * u), (int32_t)(r - 4.5f * u), goldDim);
+    FillRingMemo(s, (int32_t)cx, (int32_t)cy, (int32_t)(r - 4.5f * u), (int32_t)(r - 6 * u), gold);
 
     /* Keep the native HUD's bomb/arrow count attached to the equipped A/B
      * item as well as to its item-grid cell.  At the 3DS' 320x240 layout a
